@@ -4,7 +4,19 @@
   const $ = id => document.getElementById(id);
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const ub64 = u => btoa(String.fromCharCode(...new Uint8Array(u)));
-  let dados = fetch(BLOB).then(r => { if (!r.ok) throw new Error("http " + r.status); return r.arrayBuffer(); });
+  let dados = fetch(BLOB).then(async r => {
+    if (!r.ok) throw new Error("http " + r.status);
+    const total = +r.headers.get("content-length") || 0;
+    if (!r.body || !r.body.getReader || total < 500000) return r.arrayBuffer();
+    const leitor = r.body.getReader(), partes = []; let n = 0;
+    for (;;){
+      const { done, value } = await leitor.read(); if (done) break;
+      partes.push(value); n += value.length;
+      const a = document.getElementById("abrindo"); if (a) a.textContent = "Abrindo… " + Math.min(99, Math.round(n / total * 100)) + "%";
+    }
+    const tudo = new Uint8Array(n); let o = 0; for (const p of partes){ tudo.set(p, o); o += p.length; }
+    return tudo.buffer;
+  });
 
   async function chaveDaSenha(senha){
     const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(senha), "PBKDF2", false, ["deriveKey"]);
@@ -37,7 +49,11 @@
       try {
         const k = await chaveDaSenha($("senha").value.trim());
         const html = await abrir(k);
-        try { if ($("lembrar").checked) localStorage.setItem("lek-chave", ub64(await crypto.subtle.exportKey("raw", k))); } catch(_){}
+        try {
+          const bruta = ub64(await crypto.subtle.exportKey("raw", k));
+          sessionStorage.setItem("lek-chave-sessao", bruta);
+          if ($("lembrar").checked) localStorage.setItem("lek-chave", bruta);
+        } catch(_){}
         mostrar(html);
       } catch(e){
         btn.disabled = false;
