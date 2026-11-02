@@ -38,7 +38,7 @@
           const c = JSON.parse(t).chaves || {}, j = k => { try { return JSON.parse(c[k] || "null"); } catch(e){ return null; } };
           let n = (j("runlog_freeruns_v1") || []).length + (j("runlog_weights_v1") || []).length;
           const v = Object.keys(c).filter(k => /^runlog_v\d+$/.test(k)).sort().pop();
-          ((v && j(v) || {}).seasons || []).forEach(se => (se.done || []).forEach(x => { if (x) n++; }));
+          ((v && j(v) || {}).seasons || []).forEach(se => Object.values(se.done || {}).forEach(x => { if (x) n++; }));
           return n;
         } catch(e){ return 0; }
       },
