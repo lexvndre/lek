@@ -103,13 +103,14 @@
     } finally { enviando = false; }
   }
 
-  async function restaurar(id){
+  async function restaurar(id, auto){
     const A = APPS[id];
     const r = await fetch(api(A.arq) + "?t=" + Date.now(), { headers: { ...cab(), "Accept": "application/vnd.github.raw+json" }, cache: "no-store" });
     if (r.status === 404) throw new Error(`Ainda não tem backup do ${A.nome} no GitHub.`);
     if (!r.ok) throw new Error("GitHub respondeu " + r.status);
     const texto = await r.text();
     if (!A.validar(texto)) throw new Error("Backup em formato estranho, não restaurei.");
+    if (auto && A.contar(texto) === 0) throw new Error("backup vazio");
     A.copia(); A.gravar(texto); ls.set(k(id, "ultimo"), A.ler() || texto); ls.set(k(id, "n"), String(A.contar(texto)));
     return true;
   }
@@ -122,7 +123,7 @@
     for (const id of Object.keys(APPS)){
       const A = APPS[id], local = A.ler();
       if (local && A.contar(local) > 0) continue;
-      try { await restaurar(id); feitos.push(A.nome); } catch(e){ /* sem backup ainda */ }
+      try { await restaurar(id, true); feitos.push(A.nome); } catch(e){ /* sem backup ainda */ }
     }
     return feitos;
   }
