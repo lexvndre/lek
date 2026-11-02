@@ -109,18 +109,19 @@
     const [backup, bot] = await Promise.all([acesso(t, REPO, true), acesso(t, "lexvndre/bot-lek", false)]);
     return { backup, bot };
   }
-  // Avisos do bot (feed.json do repositório privado bot-lek)
-  async function lerFeed(){
-    const r = await fetch("https://api.github.com/repos/lexvndre/bot-lek/contents/feed.json?t=" + Date.now(),
+  // Arquivos que o bot grava no repositório privado bot-lek (feed.json, clima.json)
+  async function lerBot(nome){
+    const r = await fetch(`https://api.github.com/repos/lexvndre/bot-lek/contents/${nome}?t=` + Date.now(),
       { headers: { ...cab(), "Accept": "application/vnd.github.raw+json" }, cache: "no-store" });
     if (r.status === 401) throw new Error("A chave do GitHub foi recusada.");
-    if (r.status === 404) throw new Error("A chave não tem acesso ao bot-lek.");
+    if (r.status === 404) throw new Error("A chave não tem acesso ao bot-lek, ou o bot ainda não gerou esse dado.");
     if (!r.ok) throw new Error("GitHub respondeu " + r.status + ".");
     return r.json();
   }
+  const lerFeed = () => lerBot("feed.json");
 
   window.LekNuvem = {
-    token, enviar, restaurar, testar, lerFeed,
+    token, enviar, restaurar, testar, lerFeed, lerBot,
     salvarToken: t => { ls.set("lek-gh-token", t); ls.del("lek-nuvem-erro"); },
     tirarToken: () => ls.del("lek-gh-token"),
     estado: () => {
