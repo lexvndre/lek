@@ -1,74 +1,104 @@
-// Backup automático do VOLT no GitHub privado do Lek (repo lexvndre-port, arquivo backups/volt.json).
+// Backup automático dos apps do Lek no GitHub privado (repo lexvndre-port, pasta backups/).
 // Cada backup vira um commit, então o histórico inteiro fica guardado.
 (function(){
-  const REPO = "lexvndre/lexvndre-port", ARQ = "backups/volt.json", CHAVE = "volt_v3";
-  const API = `https://api.github.com/repos/${REPO}/contents/${ARQ}`;
+  const REPO = "lexvndre/lexvndre-port";
   const MIN_INTERVALO = 10 * 60 * 1000;
   const ls = {
     get: k => { try { return localStorage.getItem(k); } catch(e){ return null; } },
     set: (k, v) => { try { localStorage.setItem(k, v); } catch(e){} },
     del: k => { try { localStorage.removeItem(k); } catch(e){} },
+    chaves: () => { try { return Object.keys(localStorage); } catch(e){ return []; } },
   };
+
+  // O que cada app guarda neste celular
+  const APPS = {
+    volt: {
+      nome: "VOLT", arq: "backups/volt.json",
+      ler: () => ls.get("volt_v3"),
+      validar: t => { const d = JSON.parse(t); return d && d.v === 3; },
+      gravar: t => ls.set("volt_v3", t),
+      copia: () => { const a = ls.get("volt_v3"); if (a) ls.set("volt_v3_antes_de_restaurar", a); },
+    },
+    rf52: {
+      nome: "RF52", arq: "backups/rf52.json",
+      ler: () => {
+        const ks = ls.chaves().filter(k => k.startsWith("runlog_") && k !== "runlog_antes_de_restaurar").sort();
+        if (!ks.some(k => /^runlog_v\d/.test(k))) return null;
+        const o = {}; ks.forEach(k => o[k] = ls.get(k));
+        return JSON.stringify({ app: "rf52", chaves: o });
+      },
+      validar: t => { const d = JSON.parse(t); return d && d.app === "rf52" && d.chaves; },
+      gravar: t => { const d = JSON.parse(t); Object.entries(d.chaves).forEach(([k, v]) => { if (k.startsWith("runlog_") && typeof v === "string") ls.set(k, v); }); },
+      copia: () => { const a = APPS.rf52.ler(); if (a) ls.set("runlog_antes_de_restaurar", a); },
+    },
+  };
+
   const token = () => ls.get("lek-gh-token");
   const cab = () => ({ "Authorization": "Bearer " + token(), "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" });
+  const api = arq => `https://api.github.com/repos/${REPO}/contents/${arq}`;
+  const k = (app, campo) => `lek-nuvem-${app}-${campo}`;
 
   function b64(texto){
     const bytes = new TextEncoder().encode(texto); let s = "";
     for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
     return btoa(s);
   }
-  async function shaAtual(){
-    const r = await fetch(API + "?t=" + Date.now(), { headers: cab(), cache: "no-store" });
+  async function shaAtual(arq){
+    const r = await fetch(api(arq) + "?t=" + Date.now(), { headers: cab(), cache: "no-store" });
     if (r.status === 404) return null;
     if (!r.ok) throw new Error("github " + r.status);
     return (await r.json()).sha;
   }
-  let enviando = false;
+
   // modo: "manual" (sempre), "fundo" (se mudou, 1 min de folga), "auto" (se mudou, 10 min de folga)
-  async function enviar(modo){
-    if (!token() || enviando) return { ok: false, motivo: token() ? "ocupado" : "sem token" };
-    const dados = ls.get(CHAVE);
-    if (!dados) return { ok: false, motivo: "sem treinos ainda" };
-    const ultimo = +(ls.get("lek-nuvem-quando") || 0);
+  async function enviarApp(id, modo){
+    const A = APPS[id], dados = A.ler();
+    if (!dados) return { ok: true, motivo: "sem dados" };
+    const ultimo = +(ls.get(k(id, "quando")) || 0);
     const folga = modo === "fundo" ? 60 * 1000 : MIN_INTERVALO;
-    if (modo !== "manual" && (dados === ls.get("lek-nuvem-ultimo") || Date.now() - ultimo < folga)) return { ok: true, motivo: "em dia" };
+    if (modo !== "manual" && (dados === ls.get(k(id, "ultimo")) || Date.now() - ultimo < folga)) return { ok: true, motivo: "em dia" };
+    for (let tentativa = 0; tentativa < 2; tentativa++){
+      const sha = (tentativa === 0 && ls.get(k(id, "sha"))) || await shaAtual(A.arq);
+      const corpo = { message: `backup ${A.nome} ` + new Date().toISOString().slice(0, 16), content: b64(dados) };
+      if (sha) corpo.sha = sha;
+      const r = await fetch(api(A.arq), { method: "PUT", headers: cab(), body: JSON.stringify(corpo) });
+      if (r.ok){
+        const j = await r.json();
+        ls.set(k(id, "sha"), j.content.sha); ls.set(k(id, "ultimo"), dados); ls.set(k(id, "quando"), String(Date.now()));
+        return { ok: true };
+      }
+      if (r.status === 401 || r.status === 403) throw Object.assign(new Error("chave recusada pelo GitHub"), { chave: true });
+      if (r.status !== 409 && r.status !== 422) throw new Error("github " + r.status);
+      ls.del(k(id, "sha"));
+    }
+    throw new Error("conflito");
+  }
+  let enviando = false;
+  async function enviar(modo){
+    if (!token()) return { ok: false, motivo: "sem chave" };
+    if (enviando) return { ok: false, motivo: "ocupado" };
     enviando = true;
     try {
-      for (let tentativa = 0; tentativa < 2; tentativa++){
-        const sha = tentativa === 0 && ls.get("lek-nuvem-sha") || await shaAtual();
-        const corpo = { message: "backup VOLT " + new Date().toISOString().slice(0, 16), content: b64(dados) };
-        if (sha) corpo.sha = sha;
-        const r = await fetch(API, { method: "PUT", headers: cab(), body: JSON.stringify(corpo) });
-        if (r.ok){
-          const j = await r.json();
-          ls.set("lek-nuvem-sha", j.content.sha); ls.set("lek-nuvem-ultimo", dados); ls.set("lek-nuvem-quando", String(Date.now()));
-          ls.del("lek-nuvem-erro");
-          return { ok: true };
-        }
-        if (r.status === 401 || r.status === 403){ ls.set("lek-nuvem-erro", "chave recusada pelo GitHub"); return { ok: false, motivo: "chave recusada" }; }
-        if (r.status !== 409 && r.status !== 422) throw new Error("github " + r.status);
-        ls.del("lek-nuvem-sha");
-      }
-      throw new Error("conflito");
+      for (const id of Object.keys(APPS)) await enviarApp(id, modo);
+      ls.del("lek-nuvem-erro");
+      return { ok: true };
     } catch(e){
-      ls.set("lek-nuvem-erro", "sem internet ou GitHub fora"); return { ok: false, motivo: String(e) };
+      ls.set("lek-nuvem-erro", e.chave ? "chave recusada pelo GitHub" : "sem internet ou GitHub fora");
+      return { ok: false, motivo: e.message };
     } finally { enviando = false; }
   }
-  async function baixar(){
-    const r = await fetch(API + "?t=" + Date.now(), { headers: { ...cab(), "Accept": "application/vnd.github.raw+json" }, cache: "no-store" });
-    if (r.status === 404) throw new Error("Ainda não tem backup no GitHub.");
+
+  async function restaurar(id){
+    const A = APPS[id];
+    const r = await fetch(api(A.arq) + "?t=" + Date.now(), { headers: { ...cab(), "Accept": "application/vnd.github.raw+json" }, cache: "no-store" });
+    if (r.status === 404) throw new Error(`Ainda não tem backup do ${A.nome} no GitHub.`);
     if (!r.ok) throw new Error("GitHub respondeu " + r.status);
-    const texto = await r.text(), d = JSON.parse(texto);
-    if (!d || d.v !== 3) throw new Error("Backup em formato estranho, não restaurei.");
-    return texto;
+    const texto = await r.text();
+    if (!A.validar(texto)) throw new Error("Backup em formato estranho, não restaurei.");
+    A.copia(); A.gravar(texto); ls.set(k(id, "ultimo"), A.ler() || texto);
+    return true;
   }
-  async function restaurar(){
-    const texto = await baixar();
-    const atual = ls.get(CHAVE);
-    if (atual && atual !== texto) ls.set("volt_v3_antes_de_restaurar", atual);
-    ls.set(CHAVE, texto); ls.set("lek-nuvem-ultimo", texto);
-    return JSON.parse(texto);
-  }
+
   async function acesso(t, repo, gravar){
     const r = await fetch(`https://api.github.com/repos/${repo}`, { headers: { "Authorization": "Bearer " + t, "Accept": "application/vnd.github+json" } });
     if (!r.ok) return false;
@@ -79,7 +109,7 @@
     const [backup, bot] = await Promise.all([acesso(t, REPO, true), acesso(t, "lexvndre/bot-lek", false)]);
     return { backup, bot };
   }
-  // Avisos do bot (feed.json do repositório bot-lek, que pode ser privado)
+  // Avisos do bot (feed.json do repositório privado bot-lek)
   async function lerFeed(){
     const r = await fetch("https://api.github.com/repos/lexvndre/bot-lek/contents/feed.json?t=" + Date.now(),
       { headers: { ...cab(), "Accept": "application/vnd.github.raw+json" }, cache: "no-store" });
@@ -93,7 +123,10 @@
     token, enviar, restaurar, testar, lerFeed,
     salvarToken: t => { ls.set("lek-gh-token", t); ls.del("lek-nuvem-erro"); },
     tirarToken: () => ls.del("lek-gh-token"),
-    estado: () => ({ ligado: !!token(), quando: +(ls.get("lek-nuvem-quando") || 0), erro: ls.get("lek-nuvem-erro") }),
+    estado: () => {
+      const q = Object.keys(APPS).map(id => +(ls.get(k(id, "quando")) || 0));
+      return { ligado: !!token(), quando: Math.max(0, ...q), erro: ls.get("lek-nuvem-erro") };
+    },
   };
 
   // Pede pro navegador não apagar os dados sozinho
