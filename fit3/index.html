@@ -28,7 +28,7 @@
 <body>
 <main>
   <h1><b>⚡ VOLT</b> na Galaxy Fit3</h1>
-  <p class="mut">Instalador de apps (.f3x) pelo Chrome do celular, via Bluetooth. Só escreve nos 16 espaços de apps do Hub (<code>/user/hub/a00…a15.f3x</code>) e mais nada.</p>
+  <p class="mut">Instalador de apps (.f3x) e dos desenhos do VOLT pelo Chrome do celular, via Bluetooth, e o caminho de volta: puxa os treinos feitos na pulseira para o VOLT. Só grava nos espaços de apps do Hub (<code>/user/hub/a00…a15.f3x</code>), nos desenhos (<code>/user/hub/v00.art…</code>) e no registro de treinos (<code>/user/volt.log</code>).</p>
 
   <section>
     <h2>1. Conectar</h2>
@@ -48,13 +48,21 @@
   </section>
 
   <section>
-    <h2>3. Instalar ou atualizar um app</h2>
-    <p class="mut">Precisa do firmware com o Hub já instalado, e o Hub precisa ter sido aberto uma vez na pulseira. Um app com o mesmo nome é atualizado no mesmo lugar.</p>
-    <label class="btn" for="file">Escolher arquivo .f3x</label><input id="file" type="file" accept=".f3x,application/octet-stream">
+    <h2>3. Instalar ou atualizar apps e desenhos</h2>
+    <p class="mut">Precisa do firmware com o Hub já instalado, e o Hub precisa ter sido aberto uma vez na pulseira. Pode escolher vários arquivos de uma vez: os <b>.f3x</b> e o <b>volt-art.bin</b> (os desenhos e dicas dos exercícios). Um app com o mesmo nome é atualizado no mesmo lugar.</p>
+    <label class="btn" for="file">Escolher arquivos</label><input id="file" type="file" multiple accept=".f3x,.bin,application/octet-stream">
     <p id="fileInfo" class="mut"></p>
     <button id="bList" disabled>Ver apps instalados</button>
     <button id="bInstall" class="main" disabled>Instalar</button>
     <progress id="prog" value="0" max="1" hidden></progress>
+  </section>
+
+  <section>
+    <h2>4. Puxar treinos da pulseira para o VOLT</h2>
+    <p class="mut">Cada treino encerrado no VOLT da pulseira (FIM ou a última série, depois ENCERRAR) fica guardado nela. Aqui você lê esses treinos e lança no VOLT do celular, com as cargas e reps que você marcou. <b>Feche a aba do VOLT antes</b> e abra de novo depois.</p>
+    <button id="bPull" disabled>Ler treinos da pulseira</button>
+    <div id="pulled"></div>
+    <button id="bImport" class="main" disabled hidden>Lançar no VOLT</button>
   </section>
 
   <section>
@@ -68,11 +76,11 @@
 const UUID = 'db764ac8-4b08-7f25-aafe-59d03c27bae3';
 const FW_ID = 0xdf60a3cc;            // crc32("R390XXU0AZA3")
 const BLOCK = 39600, SLOTS = 16, HDR = 64, ICON = 2112;
-const SLOT_RE = /^\/user\/hub\/a(0[0-9]|1[0-5])\.f3x$/;
+const SLOT_RE = /^\/user\/hub\/a(0[0-9]|1[0-5])\.f3x$/, ART_RE = /^\/user\/hub\/v[0-9][0-9]\.art$/, LOG_PATH = '/user/volt.log';
 const enc = new TextEncoder(), dec = new TextDecoder();
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-let port = null, busy = false, f3x = null;
+let port = null, busy = false, picked = [], pulled = [];
 
 function log(msg, cls) { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = msg; $('log').appendChild(d); $('log').scrollTop = 1e9; }
 
@@ -152,7 +160,7 @@ async function readRaw(L, path, limit) {
 }
 
 async function writeFile(L, data, path, progress) {
-  if (!SLOT_RE.test(path)) throw new Error('caminho recusado: ' + path);   // the only place that writes, and only to the 16 hub slots
+  if (!SLOT_RE.test(path) && !ART_RE.test(path) && path !== LOG_PATH) throw new Error('caminho recusado: ' + path);   // the only place that writes: hub slots, VOLT drawings, the workout log
   await L.drain(); await L.send('300'); await L.expect('300');
   await L.send(`33bin,${path},${data.length}`);
   try { await L.expect('330'); } catch (e) { throw new Error('a pulseira recusou o arquivo (' + e.message + '). O Hub está instalado e já foi aberto uma vez?'); }
@@ -176,12 +184,30 @@ async function listSlots(L) {
 }
 function showSlots(t) { t.forEach((e, n) => log(`  espaço ${String(n).padStart(2)}  ${!e ? '-' : e.free ? 'livre' : e.app + ' (' + e.size + ' B)'}`)); }
 
+/* volt-art.bin (fit3/gen_volt_data.py): "VPK1", count, then {name[12], len} and the files; each file starts with "VAR1" */
+function parseArt(b) {
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  if (b.length < 8 || v.getUint32(0, true) !== 0x314b5056) throw new Error('não é um volt-art.bin');
+  const n = v.getUint16(4, true), out = []; let off = 8 + 16 * n;
+  if (!n || n > 99 || off > b.length) throw new Error('pacote inválido');
+  for (let k = 0; k < n; k++) {
+    let name = ''; for (let i = 0; i < 12 && b[8 + 16 * k + i]; i++) name += String.fromCharCode(b[8 + 16 * k + i]);
+    const len = v.getUint32(8 + 16 * k + 12, true), path = '/user/hub/' + name;
+    if (!ART_RE.test(path) || off + len > b.length || len < 12 || len > 40000 || v.getUint32(off, true) !== 0x31524156) throw new Error('desenho inválido: ' + name);
+    out.push({ path, bytes: b.subarray(off, off + len) }); off += len;
+  }
+  if (off !== b.length) throw new Error('tamanho do pacote não bate');
+  return out;
+}
+
 function setBusy(b) { busy = b; render(); }
 function render() {
   $('bConnect').disabled = busy || !navigator.serial;
   $('bProbe').disabled = busy || !port;
   $('bList').disabled = busy || !port;
-  $('bInstall').disabled = busy || !port || !f3x;
+  $('bInstall').disabled = busy || !port || !picked.length;
+  $('bPull').disabled = busy || !port;
+  $('bImport').hidden = !pulled.length; $('bImport').disabled = busy || !pulled.length;
 }
 async function run(label, fn) {
   setBusy(true); log('— ' + label);
@@ -201,13 +227,19 @@ $('bProbe').onclick = () => run('teste de conexão (só leitura)', async () => {
 });
 $('bList').onclick = () => run('apps instalados', async () => { showSlots(await session('lista', listSlots)); });
 $('file').onchange = async e => {
-  const f = e.target.files[0]; f3x = null; render(); if (!f) return;
-  const b = new Uint8Array(await f.arrayBuffer());
-  try { const i = parseF3x(b); f3x = { bytes: b, ...i }; $('fileInfo').innerHTML = ''; $('fileInfo').textContent = `${f.name}: app "${i.name}", ${i.size} bytes, CRC ok, firmware R390XXU0AZA3 ✔`; }
-  catch (err) { $('fileInfo').textContent = `${f.name}: recusado (${err.message})`; }
+  picked = []; const lines = [];
+  for (const f of e.target.files) {
+    const b = new Uint8Array(await f.arrayBuffer());
+    try {
+      if (b.length >= 4 && b[0] === 0x56 && b[1] === 0x50 && b[2] === 0x4b) { const files = parseArt(b); picked.push({ kind: 'art', files }); lines.push(`${f.name}: ${files.length} desenhos de exercícios ✔`); }
+      else { const i = parseF3x(b); picked.push({ kind: 'f3x', bytes: b, ...i }); lines.push(`${f.name}: app "${i.name}", ${i.size} bytes, CRC ok, firmware R390XXU0AZA3 ✔`); }
+    } catch (err) { lines.push(`${f.name}: recusado (${err.message})`); }
+  }
+  $('fileInfo').textContent = lines.join('\n'); $('fileInfo').style.whiteSpace = 'pre-wrap';
   render();
 };
-$('bInstall').onclick = () => run(`instalar ${f3x.name}`, async () => {
+const same = (a, b) => a && a.length === b.length && a.every((x, i) => x === b[i]);
+async function installF3x(f3x) {
   const table = await session('olhar', listSlots); showSlots(table);
   let n = table.findIndex(e => e && e.app === f3x.name);
   if (n >= 0) log(`"${f3x.name}" já está no espaço ${n}: vai ser atualizado`);
@@ -217,8 +249,102 @@ $('bInstall').onclick = () => run(`instalar ${f3x.name}`, async () => {
   await sleep(2200); await session('gravar', L => writeFile(L, f3x.bytes, path, p => $('prog').value = p));
   await sleep(2200);
   const back = await session('conferir', L => readRaw(L, path, 65536));
-  if (!back || back.length !== f3x.bytes.length || back.some((x, i) => x !== f3x.bytes[i])) throw new Error('o arquivo na pulseira não confere: tente de novo (um arquivo pela metade é ignorado pelo Hub)');
+  if (!same(back, f3x.bytes)) throw new Error('o arquivo na pulseira não confere: tente de novo (um arquivo pela metade é ignorado pelo Hub)');
   log(`"${f3x.name}" instalado no espaço ${n} ✔ Ele aparece na próxima vez que você abrir o Hub.`, 'ok');
+}
+async function installArt(files) {
+  await sleep(2200);
+  const have = await session('olhar desenhos', async L => { const o = []; for (const f of files) { o.push(await readRaw(L, f.path, 65536)); await sleep(150); } return o; });
+  const todo = files.filter((f, i) => !same(have[i], f.bytes));
+  log(`${files.length - todo.length} desenhos já estavam certos, ${todo.length} para gravar`);
+  $('prog').hidden = false; $('prog').value = 0;
+  for (let i = 0; i < todo.length; i++) {
+    await sleep(2200); await session('gravar', L => writeFile(L, todo[i].bytes, todo[i].path));
+    $('prog').value = (i + 1) / todo.length; log(`  ${todo[i].path} ✔`);
+  }
+  if (todo.length) {
+    await sleep(2200);
+    const back = await session('conferir', async L => { const o = []; for (const f of todo) { o.push(await readRaw(L, f.path, 65536)); await sleep(150); } return o; });
+    const bad = todo.filter((f, i) => !same(back[i], f.bytes));
+    if (bad.length) throw new Error(`${bad.length} desenhos não conferem: toque em Instalar de novo (só os que faltam são regravados)`);
+  }
+  log('Desenhos do VOLT instalados ✔ Abra um exercício no VOLT e toque no desenho para ver as dicas.', 'ok');
+}
+$('bInstall').onclick = () => run('instalar', async () => {
+  for (const it of picked) { if (it.kind === 'f3x') await installF3x(it); else await installArt(it.files); }
+});
+
+/* ---- treinos da pulseira -> VOLT 3 (o mesmo site, então o mesmo armazenamento do VOLT: localStorage "volt_v3" e IndexedDB "volt_v3") ---- */
+function parseLog(t) {
+  const out = []; let cur = null;
+  for (const line of t.split('\n')) {
+    let m = line.match(/^VOLT1 (\d+) (\d+) (.*)$/);
+    if (m) { cur = { seq: +m[1], secs: +m[2], title: m[3].trim(), items: [] }; continue; }
+    if (!cur) continue;
+    if (line === 'END') { if (cur.items.length) out.push(cur); cur = null; continue; }
+    m = line.match(/^([a-z0-9_]+)((?: \d+x\d+)+)$/);
+    if (m) cur.items.push({ exId: m[1], sets: m[2].trim().split(' ').map(x => { const [w, r] = x.split('x').map(Number); return { w: w / 10, r }; }) });
+  }
+  return out;
+}
+const plain = s => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const todayIso = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+function voltState() {
+  const raw = localStorage.getItem('volt_v3');
+  if (!raw) throw new Error('não achei o VOLT neste navegador. Abra o VOLT uma vez neste mesmo Chrome (lexvndre.github.io/lek/volt) e volte aqui.');
+  const S = JSON.parse(raw); if (!S || S.v !== 3 || !Array.isArray(S.sessions)) throw new Error('os dados do VOLT neste navegador estão num formato que eu não conheço');
+  return { S, raw };
+}
+const fit3Key = b => b.seq + '|' + b.secs + '|' + plain(b.title);
+$('bPull').onclick = () => run('ler treinos da pulseira', async () => {
+  const d = await session('ler', L => readRaw(L, LOG_PATH, 65536));
+  pulled = d ? parseLog(dec.decode(d)) : [];
+  let seen = []; try { seen = voltState().S.fit3Seen || []; } catch (e) { log(e.message, 'bad'); }
+  pulled = pulled.filter(b => !seen.includes(fit3Key(b)));
+  const box = $('pulled'); box.textContent = '';
+  if (!pulled.length) { log('Nenhum treino novo na pulseira.', 'ok'); render(); return; }
+  pulled.forEach((b, i) => {
+    const n = b.items.reduce((a, it) => a + it.sets.length, 0);
+    const row = document.createElement('p'); row.className = 'mut';
+    row.innerHTML = `<b style="color:var(--tx)"></b> · ${b.items.length} exercícios · ${n} séries · ${Math.round(b.secs / 60)} min<br>Data: <input type="date" id="pd${i}" style="font:inherit;background:#07090b;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:4px">`;
+    row.querySelector('b').textContent = b.title; box.appendChild(row); row.querySelector('input').value = todayIso();
+  });
+  log(`${pulled.length} treino(s) novo(s) na pulseira. Confira a data e toque em Lançar no VOLT.`, 'ok');
+});
+function idbPut(key, val) {
+  return new Promise(res => { try { const rq = indexedDB.open('volt_v3', 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+    rq.onsuccess = () => { try { const tx = rq.result.transaction('kv', 'readwrite'); tx.objectStore('kv').put(val, key); tx.oncomplete = () => res(true); tx.onerror = () => res(false); } catch (e) { res(false); } };
+    rq.onerror = () => res(false); } catch (e) { res(false); } });
+}
+$('bImport').onclick = () => run('lançar no VOLT', async () => {
+  const { S, raw } = voltState();
+  await idbPut('antes_fit3', raw);                               // a copy of the state before the import, just in case
+  S.fit3Seen = S.fit3Seen || [];
+  const byTitle = {}; S.sessions.slice().sort((a, b) => a.date < b.date ? -1 : 1).forEach(s => byTitle[plain(s.title)] = s);
+  let added = 0;
+  pulled.forEach((b, i) => {
+    const prev = byTitle[plain(b.title)], date = ($('pd' + i) && $('pd' + i).value) || todayIso();
+    const end = date === todayIso() ? Date.now() : new Date(date + 'T20:00:00').getTime(), start = end - b.secs * 1000;
+    const items = b.items.map(it => {
+      const pit = prev && prev.items.find(x => x.exId === it.exId);
+      const o = { id: uid(), exId: it.exId, note: '', sets: it.sets.map(x => ({ id: uid(), t: 'n', w: x.w || null, r: x.r, min: null, km: null, sec: null, done: true, at: end, doneAt: end })) };
+      if (pit && pit.rest) o.rest = pit.rest;
+      return o;
+    });
+    const s = { id: uid(), date, title: prev ? prev.title : b.title, items, note: '', start, end, dur: b.secs / 60, fit3: true };
+    if (prev && prev.gid) s.gid = prev.gid;
+    S.sessions.push(s); S.fit3Seen.push(fit3Key(b)); added++;
+  });
+  S.fit3Seen = S.fit3Seen.slice(-200);
+  const js = JSON.stringify(S);
+  localStorage.setItem('volt_v3', js); await idbPut('state', js);
+  log(`${added} treino(s) lançado(s) no VOLT ✔ Abra o VOLT (se ele estava aberto, feche a aba e abra de novo).`, 'ok');
+  pulled = []; $('pulled').textContent = '';
+  await sleep(2200);
+  await session('limpar', L => writeFile(L, enc.encode('#\n'), LOG_PATH));
+  log('Registro da pulseira limpo.', 'ok');
 });
 
 (function init() {
