@@ -51,6 +51,13 @@
     <p id="sum" class="mut"></p>
   </section>
 
+  <section id="snsBox" hidden>
+    <h2>Sensores: leituras para mandar</h2>
+    <p class="mut">O app Sensores gravou leituras na pulseira. Toque em Copiar e cole na conversa com o Claude.</p>
+    <textarea id="snsTxt" readonly rows="5" style="width:100%;font:12px monospace;background:#111;color:#ccc;border:1px solid #333;border-radius:8px"></textarea>
+    <button id="bSns">Copiar</button>
+  </section>
+
   <section>
     <h2>Registro</h2>
     <div id="log"></div>
@@ -430,6 +437,7 @@ async function sync() {
   const man = await r.json(), CAT = JSON.parse(dec.decode(await fetchBytes(man.cat.file, man.cat.sha)));
   log('lendo a pulseira…');
   const [logB, manB, runB] = await session('ler', async L => { const a = await readRaw(L, LOG_PATH, 65536); await sleep(200); const m = await readRaw(L, MAN_PATH, 65536); await sleep(200); return [a, m, await readRaw(L, RUN_LOG, 65536)]; });
+  try { await readSensors(); } catch (e) { log('leituras do app Sensores: ' + e.message, 'bad'); }
   let have = {}; try { if (manB) have = JSON.parse(dec.decode(manB)) || {}; } catch (e) { have = {}; }
   $('prog').value = 0.08;
 
@@ -493,6 +501,18 @@ async function sync() {
   log('Sincronizado ✔ Pode abrir o VOLT na pulseira.', 'ok');
 }
 
+/* the snapshots of the Sensores app (/user/sns0..3.bin): gzip + base64 in a box, to paste in the chat ("SNSZ" + for each file: u8 index, u32 length, bytes) */
+async function readSensors() {
+  const files = await session('sensores', async L => { const out = []; for (let i = 0; i < 4; i++) { out.push(await readRaw(L, `/user/sns${i}.bin`, 16384)); await sleep(200); } return out; });
+  const parts = []; files.forEach((b, i) => { if (b && b.length > 8) { const h = new Uint8Array(5); h[0] = i; new DataView(h.buffer).setUint32(1, b.length, true); parts.push(h, b); } });
+  if (!parts.length) return;
+  const raw = new Blob([new TextEncoder().encode('SNSZ'), ...parts]);
+  const gz = new Uint8Array(await new Response(raw.stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+  let bin = ''; gz.forEach(c => bin += String.fromCharCode(c));
+  $('snsTxt').value = 'SNS:' + btoa(bin); $('snsBox').hidden = false;
+  log(`leituras do app Sensores: ${parts.length / 2} gravação(ões), copie no fim da página`, 'ok');
+}
+
 function setBusy(b) { busy = b; render(); }
 function render() {
   $('bConnect').disabled = busy || !navigator.serial;
@@ -509,6 +529,7 @@ $('bConnect').onclick = () => run('conectar', async () => {
   $('port').textContent = 'Pulseira escolhida. Agora toque em Sincronizar.'; log('pulseira escolhida', 'ok');
 });
 $('big').onclick = () => run('sincronizar', sync);
+$('bSns').onclick = async () => { const t = $('snsTxt'); t.select(); try { await navigator.clipboard.writeText(t.value); $('bSns').textContent = 'Copiado ✔'; } catch (e) { document.execCommand('copy'); } };
 $('bProbe').onclick = () => run('teste de conexão (só leitura)', async () => {
   const r = await session('teste', async L => { const d = await readRaw(L, slotPath(0), 65536); return d ? `existe um arquivo no espaço 0 (${d.length} B)` : 'não há app no espaço 0'; });
   log('A pulseira respondeu: ' + r, 'ok'); log('Conexão funcionando ✔', 'ok');

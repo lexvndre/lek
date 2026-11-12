@@ -3,7 +3,7 @@
   {
    "file": "volt.f3x",
    "title": "VOLT",
-   "sha": "83f3d77aa7184a803e075bfdef62d7a9e5d8974669f3d678ac793648e99a4b4f"
+   "sha": "7838db7e83abe8256fe3412c92afd7d4f5dcfb5641500b665354bc68fd889800"
   },
   {
    "file": "intervalo.f3x",
@@ -24,6 +24,11 @@
    "file": "corrida.f3x",
    "title": "Corrida",
    "sha": "7e153d6f9688baae255fdfbd93c882ffbeb4c1d91fc2ed40ae1b79a5c2856867"
+  },
+  {
+   "file": "sensores.f3x",
+   "title": "Sensores",
+   "sha": "aceeb5c37b599d793450eb8ad0d7ce261fc95acd3d38b8eab54d090b2fa66fc7"
   }
  ],
  "art": {
