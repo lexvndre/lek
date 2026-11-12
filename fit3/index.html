@@ -81,7 +81,7 @@
 const UUID = 'db764ac8-4b08-7f25-aafe-59d03c27bae3';
 const FW_ID = 0xdf60a3cc;            // crc32("R390XXU0AZA3")
 const BLOCK = 39600, SLOTS = 16, HDR = 64, ICON = 2112;
-const SLOT_RE = /^\/user\/hub\/a(0[0-9]|1[0-5])\.f3x$/, ART_RE = /^\/user\/hub\/e_[a-z0-9_]{1,24}\.art$/, LOG_PATH = '/user/volt.log', DAT_PATH = '/user/hub/volt.dat', MAN_PATH = '/user/hub/sync.txt', RUN_LOG = '/user/corrida.log', RUN_DAT = '/user/hub/corrida.dat';
+const SLOT_RE = /^\/user\/hub\/a(0[0-9]|1[0-5])\.f3x$/, ART_RE = /^\/user\/hub\/e_[a-z0-9_]{1,24}\.art$/, LOG_PATH = '/user/volt.log', DAT_PATH = '/user/hub/volt.dat', MAN_PATH = '/user/hub/sync.txt', RUN_LOG = '/user/corrida.log', RUN_DAT = '/user/hub/corrida.dat', ALT_DAT = '/user/hub/alt.dat';
 const enc = new TextEncoder(), dec = new TextDecoder();
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -165,7 +165,7 @@ async function readRaw(L, path, limit) {
 }
 
 async function writeFile(L, data, path, progress) {
-  if (!SLOT_RE.test(path) && !ART_RE.test(path) && ![LOG_PATH, DAT_PATH, MAN_PATH, RUN_LOG, RUN_DAT].includes(path)) throw new Error('caminho recusado: ' + path);   // the only place that writes: hub slots, VOLT files
+  if (!SLOT_RE.test(path) && !ART_RE.test(path) && ![LOG_PATH, DAT_PATH, MAN_PATH, RUN_LOG, RUN_DAT, ALT_DAT].includes(path)) throw new Error('caminho recusado: ' + path);   // the only place that writes: hub slots, VOLT files
   await L.drain(); await L.send('300'); await L.expect('300');
   await L.send(`33bin,${path},${data.length}`);
   try { await L.expect('330'); } catch (e) { throw new Error('a pulseira recusou o arquivo (' + e.message + '). O Hub está instalado e já foi aberto uma vez?'); }
@@ -192,6 +192,8 @@ function showSlots(t) { t.forEach((e, n) => log(`  espaço ${String(n).padStart(
 
 /* volt.dat from the VOLT on the phone: the same bytes as fit3/gen_volt_data.py (volt_dat) */
 const VD = { MAX_W: 5, MAX_EX: 10, MAX_SET: 6, NAME: 34, TITLE: 22, MUSC: 20, ID: 24, VEX: 106, SKIP: ['corrida'] };
+const VD_BAR20 = 'agach_bb agach_frontal desenv_barra elev_pelv good_morning hip_thrust levant_terra_sumo rem_curv_bb sup_fechado sup_incl_bb sup_reto_bb terra_convencional terra_rom'.split(' '), VD_NOBAR = ['leg_press', 'hack'];
+const vdPlates = i => VD_BAR20.includes(i) ? 21 : VD_NOBAR.includes(i) ? 1 : 0;      // the "art" byte of VEx: plates per side (gen_volt_data.py has the same list)
 const vdPlain = (s, n) => { s = String(s || '').normalize('NFKD').replace(/[^\x00-\x7f]/g, '').replace(/\s+/g, ' ').trim().replace(/\\/g, '/').replace(/"/g, "'"); return n ? s.slice(0, n - 1) : s; };
 const vdE1 = (w, r) => (w <= 0 || r <= 0) ? 0 : (r === 1 ? w : w * (1 + Math.min(r, 20) / 30));
 function voltDat(S, CAT, stamp) {
@@ -231,10 +233,40 @@ function voltDat(S, CAT, stamp) {
     w.items.forEach((e, k) => {
       const q = o + 24 + k * VD.VEX;
       str(q, e.name, VD.NAME); str(q + 34, vdPlain(e.musc, VD.MUSC).toUpperCase(), VD.MUSC); str(q + 54, e.id, VD.ID);
-      out[q + 78] = e.sets.length; v.setUint16(q + 80, Math.min(e.rest, 600), true);
+      out[q + 78] = e.sets.length; out[q + 79] = vdPlates(e.id); v.setUint16(q + 80, Math.min(e.rest, 600), true);
       e.sets.forEach(([w10, r], j) => { v.setUint16(q + 82 + 2 * j, w10 & 0xffff, true); out[q + 94 + j] = r & 255; });
       out[q + 100] = e.step10; out[q + 101] = e.sr; v.setUint16(q + 102, e.best10, true); v.setUint16(q + 104, e.sw10 & 0xffff, true);
     });
+  });
+  return out;
+}
+
+/* /user/hub/alt.dat: per exercise of volt.dat, up to 3 others for the same muscle (TROCAR on the band), the ones used before first, with their last top set.
+   Layout in apps/volt.c: AltHdr { "ALT1", u16 n, u16 212 }, then n x AltRec { char id[24]; u8 n, pad; AltEx a[3] }, AltEx { char id[24]; char name[34]; u16 w10; u8 reps, plates } */
+const AL = { REC: 212, EX: 62, MAX: 64 };
+function altDat(S, CAT, dat) {
+  const dv = new DataView(dat.buffer, dat.byteOffset, dat.byteLength), nw = dat.length > 16 ? dv.getUint16(4, true) : 0, WSZ = 24 + VD.MAX_EX * VD.VEX, ids = [];
+  const cstr = (o, n) => { let t = ''; for (let k = 0; k < n && dat[o + k]; k++) t += String.fromCharCode(dat[o + k]); return t; };
+  for (let w = 0; w < nw; w++) { const o = 16 + w * WSZ; for (let k = 0; k < dat[o + 22]; k++) { const id = cstr(o + 24 + k * VD.VEX + 54, VD.ID); if (id && !ids.includes(id)) ids.push(id); } }
+  const top = {}, used = {};
+  (S.sessions || []).slice().sort((a, b) => (a.date || '') < (b.date || '') ? -1 : 1).forEach(s => (s.items || []).forEach(it => {
+    const work = (it.sets || []).filter(x => (x.t || 'n') !== 'w' && x.done !== false && +x.r > 0).map(x => [Math.round((+x.w || 0) * 10), Math.trunc(+x.r)]);
+    if (!work.length) return; used[it.exId] = (used[it.exId] || 0) + 1;
+    top[it.exId] = work.reduce((a, b) => (b[0] > a[0] || (b[0] === a[0] && b[1] > a[1])) ? b : a);
+  }));
+  const ok = j => /^[a-z0-9_]{1,23}$/.test(j);
+  const recs = ids.filter(i => ok(i) && CAT[i] && CAT[i][1] && CAT[i][1] !== 'CARDIO').slice(0, AL.MAX).map(i => {
+    const alts = Object.keys(CAT).filter(j => j !== i && ok(j) && CAT[j][1] === CAT[i][1])
+      .sort((a, b) => (used[b] || 0) - (used[a] || 0) || (CAT[a][0] < CAT[b][0] ? -1 : 1)).slice(0, 3);
+    return [i, alts];
+  }).filter(r => r[1].length);
+  const out = new Uint8Array(8 + recs.length * AL.REC), v = new DataView(out.buffer);
+  const str = (off, s, n) => { const t = vdPlain(s, n); for (let k = 0; k < t.length && k < n - 1; k++) out[off + k] = t.charCodeAt(k); };
+  out.set([0x41, 0x4c, 0x54, 0x31]); v.setUint16(4, recs.length, true); v.setUint16(6, AL.REC, true);
+  recs.forEach(([i, alts], r) => {
+    const o = 8 + r * AL.REC; str(o, i, 24); out[o + 24] = alts.length;
+    alts.forEach((j, k) => { const q = o + 26 + k * AL.EX, t = top[j] || [0, 0];   // reps 0: never done (the band starts it from the load of the exercise it replaces)
+      str(q, j, 24); str(q + 24, CAT[j][0], VD.NAME); v.setUint16(q + 58, Math.min(9990, t[0]), true); out[q + 60] = Math.min(99, t[1]); out[q + 61] = vdPlates(j); });
   });
   return out;
 }
@@ -454,6 +486,8 @@ async function sync() {
       log('mandando os treinos para a pulseira…'); await sleep(2200); await session('treinos', L => writeFile(L, dat, DAT_PATH));
       have['volt.dat'] = h; manPending = true; sum.push(`${new DataView(dat.buffer).getUint16(4, true)} treinos do VOLT na pulseira`);
     } else sum.push('Treinos da pulseira já estavam em dia');
+    if (dat.length > 16) { const alt = altDat(st.S, CAT, dat), ah = await sha(alt);      // TROCAR on the band: the other exercises for each muscle
+      if (have['alt.dat'] !== ah) { await sleep(2200); await session('trocas', L => writeFile(L, alt, ALT_DAT)); have['alt.dat'] = ah; manPending = true; } }
     // the runs: band -> VOLT, then the plan -> band
     const runs = runB ? parseRunLog(dec.decode(runB)) : [], today = todayIso();
     const nr = importRuns(st, runs, today);
