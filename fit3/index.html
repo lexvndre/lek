@@ -28,6 +28,7 @@
 </head>
 <body>
 <main>
+  <p class="mut" style="margin:0"><a href="../" style="color:inherit">‹ Painel</a></p>
   <h1><b>⚡ VOLT</b> na Galaxy Fit3</h1>
   <p class="mut">Tudo pela pulseira em um botão: os treinos feitos nela vão para o VOLT, os treinos do VOLT vão para ela, e os apps e desenhos se atualizam sozinhos. Pelo Chrome do celular, via Bluetooth.</p>
 
@@ -174,7 +175,7 @@ async function listSlots(L) {
   const out = [];
   for (let n = 0; n < SLOTS; n++) {
     const d = await readRaw(L, slotPath(n), 65536);
-    if (!d) out.push(null); else { try { out.push({ app: parseF3x(d).name, size: d.length }); } catch { out.push({ free: true }); } }
+    if (!d) out.push(null); else { try { out.push({ app: parseF3x(d).name, size: d.length, sha: await sha(d) }); } catch { out.push({ free: true }); } }
     await sleep(250);
   }
   return out;
@@ -359,7 +360,7 @@ async function installF3x(f3x, table) {
   await sleep(2200);
   const back = await session('conferir', L => readRaw(L, path, 65536));
   if (!same(back, f3x.bytes)) throw new Error(`${f3x.name}: o arquivo na pulseira não confere, sincronize de novo`);
-  table[n] = { app: f3x.name, size: f3x.bytes.length };
+  table[n] = { app: f3x.name, size: f3x.bytes.length, sha: await sha(f3x.bytes) };
   log(`  ${f3x.name} ✔`, 'ok');
 }
 
@@ -459,10 +460,12 @@ async function sync() {
   $('prog').value = 0.15;
 
   // 3. apps
-  const apps = man.apps.filter(a => have[a.file] !== a.sha);
+  // what is really on the band decides (a new firmware leaves the Hub empty), not what this page remembers sending
+  log('conferindo os apps da pulseira…');
+  const table = await session('olhar', listSlots);
+  const apps = man.apps.filter(a => !table.some(e => e && e.app === a.title && e.sha === a.sha));
   if (apps.length) {
-    log(`atualizando ${apps.length} app(s)…`);
-    const table = await session('olhar', listSlots);
+    log(`instalando ${apps.length} app(s)…`);
     for (const a of apps) { const b = await fetchBytes(a.file, a.sha), f = { bytes: b, ...parseF3x(b) }; await installF3x(f, table); have[a.file] = a.sha; }
     await saveManifest(have); sum.push('Apps atualizados: ' + apps.map(a => a.title || a.file).join(', '));
   } else sum.push('Apps já estavam em dia');
@@ -486,6 +489,7 @@ async function sync() {
   if (manPending) await saveManifest(have);
   $('prog').value = 1;
   $('sum').innerHTML = ''; sum.forEach(t => { const d = document.createElement('div'); d.textContent = '✔ ' + t; $('sum').appendChild(d); });
+  try { localStorage.setItem('fit3_last', JSON.stringify({ t: Date.now(), sum })); } catch (e) { }   // the panel (lek/) shows when the band last synced
   log('Sincronizado ✔ Pode abrir o VOLT na pulseira.', 'ok');
 }
 
