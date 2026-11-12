@@ -1,0 +1,32 @@
+{
+ "apps": [
+  {
+   "file": "volt.f3x",
+   "title": "VOLT",
+   "sha": "d256bf5aa50d49cc99b620f7199349144af28b28032b802bd09af5544a6f9d3b"
+  },
+  {
+   "file": "intervalo.f3x",
+   "title": "Intervalo",
+   "sha": "076af8814c87e394f2db2f6765875186676a188541ccd67285a0dad976e0d145"
+  },
+  {
+   "file": "respira.f3x",
+   "title": "Respira",
+   "sha": "2accc4473bc57ccc2349327773e315c7cd662e129d4b9633351ccf7dc00082c0"
+  },
+  {
+   "file": "agua.f3x",
+   "title": "Agua",
+   "sha": "c2c0f3b1cb46d695ea40e0097cb5f40b8614b6d44ce6ab070e0990f1b68ccc77"
+  }
+ ],
+ "art": {
+  "file": "art.bin",
+  "sha": "4677042fa58cbfc13bdce49cf9967d57f58bcae9c5372475d605b16b7a8267f7"
+ },
+ "cat": {
+  "file": "cat.json",
+  "sha": "45e72b360eae2c7464465487ae1caa33cf63c38b829483289702c3c71b252d23"
+ }
+}
