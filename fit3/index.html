@@ -578,16 +578,18 @@ async function sync() {
   log('Sincronizado ✔ Pode abrir o VOLT na pulseira.', 'ok');
 }
 
-/* the snapshots of the Sensores app (/user/sns0..3.bin): gzip + base64 in a box, to paste in the chat ("SNSZ" + for each file: u8 index, u32 length, bytes) */
+/* the samples of the Sensores app (/user/snr0..15.bin; old snapshots /user/sns0..3.bin): gzip + base64 in a box, to paste in the chat
+   ("SNSZ" + for each file: u8 index (sns: 0..3, snr: 16..31), u32 length, bytes) */
 async function readSensors() {
-  const files = await session('sensores', async L => { const out = []; for (let i = 0; i < 4; i++) { out.push(await readRaw(L, `/user/sns${i}.bin`, 16384)); await sleep(200); } return out; });
-  const parts = []; files.forEach((b, i) => { if (b && b.length > 8) { const h = new Uint8Array(5); h[0] = i; new DataView(h.buffer).setUint32(1, b.length, true); parts.push(h, b); } });
+  const names = [0, 1, 2, 3].map(i => `/user/sns${i}.bin`).concat([...Array(16).keys()].map(i => `/user/snr${i}.bin`));
+  const files = await session('sensores', async L => { const out = []; for (const n of names) { out.push(await readRaw(L, n, 16384)); await sleep(150); } return out; });
+  const parts = []; files.forEach((b, i) => { if (b && b.length > 8) { const h = new Uint8Array(5); h[0] = i < 4 ? i : i + 12; new DataView(h.buffer).setUint32(1, b.length, true); parts.push(h, b); } });
   if (!parts.length) return;
   const raw = new Blob([new TextEncoder().encode('SNSZ'), ...parts]);
   const gz = new Uint8Array(await new Response(raw.stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
   let bin = ''; gz.forEach(c => bin += String.fromCharCode(c));
   $('snsTxt').value = 'SNS:' + btoa(bin); $('snsBox').hidden = false;
-  log(`leituras do app Sensores: ${parts.length / 2} gravação(ões), copie no fim da página`, 'ok');
+  log(`leituras do app Sensores: ${parts.length / 2} amostra(s), copie no fim da página`, 'ok');
 }
 
 function setBusy(b) { busy = b; render(); }
