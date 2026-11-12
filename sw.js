@@ -1,5 +1,5 @@
 // Guarda o app no celular pra abrir rápido e até sem internet.
-const CACHE = "lek-1794483947";
+const CACHE = "lek-1794504600";
 self.addEventListener("install", e => self.skipWaiting());
 self.addEventListener("activate", e => e.waitUntil(
   caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())
@@ -7,6 +7,7 @@ self.addEventListener("activate", e => e.waitUntil(
 self.addEventListener("fetch", e => {
   const u = new URL(e.request.url);
   if (e.request.method !== "GET" || u.origin !== location.origin) return;
+  if (u.pathname.includes("/fit3/")) return;             // a página da pulseira sempre da rede: versões novas de apps e desenhos chegam na hora
   e.respondWith(caches.open(CACHE).then(async c => {
     const velho = await c.match(e.request);
     const novo = fetch(e.request).then(r => { if (r.ok) c.put(e.request, r.clone()); return r; });
