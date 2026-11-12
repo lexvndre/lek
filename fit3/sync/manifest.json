@@ -3,7 +3,7 @@
   {
    "file": "volt.f3x",
    "title": "VOLT",
-   "sha": "cf56d1bd33c0099018cd558c4710a871276834cd58113f1e01aa662d89dbc5ea"
+   "sha": "58ac3d66b87809e81dc73f56552b156f53bdd247bcc4779ac3ebeaa7a597812a"
   },
   {
    "file": "intervalo.f3x",
@@ -18,7 +18,7 @@
   {
    "file": "agua.f3x",
    "title": "Agua",
-   "sha": "157eac6f960ffbba133979d665b85bfce782e9a0de0bcc3c580f712da6af0171"
+   "sha": "553cdacc37c84b839261b77ef53eaa449945fecf5240db7fab373188b249ed92"
   },
   {
    "file": "corrida.f3x",
@@ -29,6 +29,11 @@
    "file": "sensores.f3x",
    "title": "Sensores",
    "sha": "aceeb5c37b599d793450eb8ad0d7ce261fc95acd3d38b8eab54d090b2fa66fc7"
+  },
+  {
+   "file": "hoje.f3x",
+   "title": "Hoje",
+   "sha": "87cdf53d16a24b401ec63b604bb68281a74b865428f1b0ac6380dadf86609030"
   }
  ],
  "art": {

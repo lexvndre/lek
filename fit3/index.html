@@ -81,7 +81,7 @@
 const UUID = 'db764ac8-4b08-7f25-aafe-59d03c27bae3';
 const FW_ID = 0xdf60a3cc;            // crc32("R390XXU0AZA3")
 const BLOCK = 39600, SLOTS = 16, HDR = 64, ICON = 2112;
-const SLOT_RE = /^\/user\/hub\/a(0[0-9]|1[0-5])\.f3x$/, ART_RE = /^\/user\/hub\/e_[a-z0-9_]{1,24}\.art$/, LOG_PATH = '/user/volt.log', DAT_PATH = '/user/hub/volt.dat', MAN_PATH = '/user/hub/sync.txt', RUN_LOG = '/user/corrida.log', RUN_DAT = '/user/hub/corrida.dat', ALT_DAT = '/user/hub/alt.dat';
+const SLOT_RE = /^\/user\/hub\/a(0[0-9]|1[0-5])\.f3x$/, ART_RE = /^\/user\/hub\/e_[a-z0-9_]{1,24}\.art$/, LOG_PATH = '/user/volt.log', DAT_PATH = '/user/hub/volt.dat', MAN_PATH = '/user/hub/sync.txt', RUN_LOG = '/user/corrida.log', RUN_DAT = '/user/hub/corrida.dat', ALT_DAT = '/user/hub/alt.dat', DIA_LOG = '/user/diario.log', PROG_DAT = '/user/hub/prog.dat', AGUA_SAV = '/user/agua.sav';
 const enc = new TextEncoder(), dec = new TextDecoder();
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -165,7 +165,7 @@ async function readRaw(L, path, limit) {
 }
 
 async function writeFile(L, data, path, progress) {
-  if (!SLOT_RE.test(path) && !ART_RE.test(path) && ![LOG_PATH, DAT_PATH, MAN_PATH, RUN_LOG, RUN_DAT, ALT_DAT].includes(path)) throw new Error('caminho recusado: ' + path);   // the only place that writes: hub slots, VOLT files
+  if (!SLOT_RE.test(path) && !ART_RE.test(path) && ![LOG_PATH, DAT_PATH, MAN_PATH, RUN_LOG, RUN_DAT, ALT_DAT, DIA_LOG, PROG_DAT].includes(path)) throw new Error('caminho recusado: ' + path);   // the only place that writes: hub slots, VOLT files
   await L.drain(); await L.send('300'); await L.expect('300');
   await L.send(`33bin,${path},${data.length}`);
   try { await L.expect('330'); } catch (e) { throw new Error('a pulseira recusou o arquivo (' + e.message + '). O Hub está instalado e já foi aberto uma vez?'); }
@@ -347,6 +347,42 @@ function corridaDat(S, today) {
   });
   return out;
 }
+/* ---- the Hoje app: /user/hub/prog.dat (ProgFile in apps/hoje.c, 64 bytes) and the band's quick logs, /user/diario.log ---- */
+function progDat(S, today) {
+  const out = new Uint8Array(64), v = new DataView(out.buffer), str = (off, s, n) => { const t = vdPlain(s, n); for (let k = 0; k < t.length && k < n - 1; k++) out[off + k] = t.charCodeAt(k); };
+  out.set([0x50, 0x52, 0x47, 0x31]); str(4, today.slice(8, 10) + '/' + today.slice(5, 7), 8);
+  const kgs = (S.metrics || []).filter(m => m.key === 'peso' && +m.v > 0).sort((a, b) => a.date < b.date ? -1 : 1), last = kgs.length ? +kgs[kgs.length - 1].v : 0;
+  const g = (S.goals || []).find(x => x && x.type === 'medida' && x.key === 'peso');
+  v.setUint16(12, Math.round(last * 10), true); v.setUint16(14, g ? Math.round(+g.target * 10) : 0, true); v.setUint16(16, g ? Math.round(+g.start * 10) : 0, true);
+  const wk = rnWeek(today), runs = rnRuns(S).filter(c => c.date >= wk && c.date <= today);
+  v.setUint16(18, Math.min(65535, Math.round(runs.reduce((a, c) => a + c.km, 0) * 10)), true);
+  const hist = kgs.slice(-8); hist.forEach((m, i) => v.setUint16(20 + 2 * i, Math.round(+m.v * 10), true)); out[36] = hist.length;
+  out[37] = Math.min(255, (S.sessions || []).filter(x => (x.date || '') >= wk && (x.date || '') <= today && !VD.SKIP.includes(String(x.title || '').trim().toLowerCase())).length);
+  if (g && last) { const nx = (g.steps || []).filter(t => +t < last && +t > +g.target).sort((a, b) => b - a)[0]; str(40, nx ? `proximo marco: ${nx} kg` : `meta final: ${g.target} kg`, 24); }
+  return out;
+}
+/* "DIA1 <date> peso <kg x 10>" and "DIA1 <date> ck <sono> <energia> <dor> <humor>" into VOLT 3 (S.metrics peso, S.checkins[date]) */
+function importDiario(st, text) {
+  const { S } = st; let n = 0; S.metrics = S.metrics || []; S.checkins = S.checkins || {};
+  text.split('\n').forEach(l => {
+    let m = /^DIA1 (\d{4}-\d\d-\d\d) peso (\d+)$/.exec(l.trim());
+    if (m) { const kg = +m[2] / 10, old = S.metrics.find(x => x.key === 'peso' && x.date === m[1]);
+      if (old) old.v = kg; else S.metrics.push({ id: uid(), key: 'peso', date: m[1], v: kg }); n++; log(`  Peso ${m[1].slice(8, 10)}/${m[1].slice(5, 7)}: ${kg} kg`, 'ok'); return; }
+    m = /^DIA1 (\d{4}-\d\d-\d\d) ck ([1-5]) ([1-5]) ([1-5]) ([1-5])$/.exec(l.trim());
+    if (m) { S.checkins[m[1]] = Object.assign({}, S.checkins[m[1]], { sono: +m[2], energia: +m[3], dor: +m[4], humor: +m[5] }); n++; log(`  Check-in ${m[1].slice(8, 10)}/${m[1].slice(5, 7)}`, 'ok'); }
+  });
+  return n;
+}
+/* the water of the Agua app (/user/agua.sav "AWG2": u16 ml, u16 goal, u32 day as 20261112) into S.water[date], never lowering what the phone has */
+function importAgua(st, b) {
+  if (!b || b.length < 12) return 0; const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  if (v.getUint32(0, true) !== 0x32475741) return 0;
+  const ml = v.getUint16(4, true), d = v.getUint32(8, true); if (!ml || d < 20240101) return 0;
+  const iso = `${Math.floor(d / 10000)}-${String(Math.floor(d / 100) % 100).padStart(2, '0')}-${String(d % 100).padStart(2, '0')}`;
+  st.S.water = st.S.water || {}; if ((st.S.water[iso] || 0) >= ml) return 0;
+  st.S.water[iso] = ml; log(`  Água ${iso.slice(8, 10)}/${iso.slice(5, 7)}: ${ml} ml`, 'ok'); return 1;
+}
+
 /* the runs saved on the band ("RUN1 <seq> <date> <km x 100> <seconds>") into VOLT, as Registrar corrida does on the phone */
 function parseRunLog(t) {
   const out = []; t.split('\n').forEach(l => { const m = /^RUN1 (\d+) (\d{4}-\d\d-\d\d) (\d+) (\d+)$/.exec(l.trim()); if (m) out.push({ seq: +m[1], date: m[2], km100: +m[3], secs: +m[4] }); });
@@ -468,7 +504,8 @@ async function sync() {
   const r = await fetch(SITE + 'manifest.json?t=' + Date.now(), { cache: 'no-store' }); if (!r.ok) throw new Error('sem internet? não consegui ver as versões novas');
   const man = await r.json(), CAT = JSON.parse(dec.decode(await fetchBytes(man.cat.file, man.cat.sha)));
   log('lendo a pulseira…');
-  const [logB, manB, runB] = await session('ler', async L => { const a = await readRaw(L, LOG_PATH, 65536); await sleep(200); const m = await readRaw(L, MAN_PATH, 65536); await sleep(200); return [a, m, await readRaw(L, RUN_LOG, 65536)]; });
+  const [logB, manB, runB, diaB, aguaB] = await session('ler', async L => { const a = await readRaw(L, LOG_PATH, 65536); await sleep(200); const m = await readRaw(L, MAN_PATH, 65536); await sleep(200);
+    const r = await readRaw(L, RUN_LOG, 65536); await sleep(200); const d = await readRaw(L, DIA_LOG, 65536); await sleep(200); return [a, m, r, d, await readRaw(L, AGUA_SAV, 64)]; });
   try { await readSensors(); } catch (e) { log('leituras do app Sensores: ' + e.message, 'bad'); }
   let have = {}; try { if (manB) have = JSON.parse(dec.decode(manB)) || {}; } catch (e) { have = {}; }
   $('prog').value = 0.08;
@@ -493,6 +530,12 @@ async function sync() {
     const nr = importRuns(st, runs, today);
     if (nr) { const js = JSON.stringify(st.S); localStorage.setItem('volt_v3', js); await idbPut('state', js); sum.push(`${nr} corrida(s) da pulseira lançada(s) no VOLT`); }
     if (runs.length) { await sleep(2200); await session('limpar corridas', L => writeFile(L, enc.encode('#\n'), RUN_LOG)); }
+    // the Hoje app: weight and check-ins, the water of the day, then the progress card
+    const nd = diaB ? importDiario(st, dec.decode(diaB)) : 0, na = importAgua(st, aguaB);
+    if (nd || na) { const js = JSON.stringify(st.S); localStorage.setItem('volt_v3', js); await idbPut('state', js); sum.push(`${nd} registro(s) do Hoje${na ? ' e a água' : ''} lançados no VOLT`); }
+    if (diaB && diaB.length > 2) { await sleep(2200); await session('limpar diario', L => writeFile(L, enc.encode('#\n'), DIA_LOG)); }
+    const pdat = progDat(st.S, today), ph = await sha(pdat);
+    if (have['prog.dat'] !== ph) { await sleep(2200); await session('progresso', L => writeFile(L, pdat, PROG_DAT)); have['prog.dat'] = ph; manPending = true; }
     const rdat = corridaDat(st.S, today);
     if (!rdat) sum.push('Corrida: crie o plano na aba Corrida do VOLT para ele ir para a pulseira');
     else { const rh = await sha(rdat);
