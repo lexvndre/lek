@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0A0C0E">
+<title>VOLT · Instalar na Galaxy Fit3</title>
+<style>
+  :root { color-scheme: dark; --bg:#0A0C0E; --card:#15181c; --line:#262b31; --tx:#e9edf1; --mut:#8b949e; --volt:#ffe200; --ok:#3ccf7a; --bad:#ff6b5b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--tx); font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  main { max-width:560px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { font-size:24px; margin:4px 0 4px; } h1 b { color:var(--volt); }
+  h2 { font-size:17px; margin:0 0 8px; }
+  p { margin:6px 0; } .mut { color:var(--mut); font-size:14px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin:14px 0; }
+  button, label.btn { display:block; width:100%; padding:13px 14px; margin:8px 0 0; border:0; border-radius:12px; font:600 16px system-ui,sans-serif; background:#2b3138; color:var(--tx); text-align:center; }
+  button.main { background:var(--volt); color:#111; }
+  button:disabled { opacity:.4; }
+  input[type=file] { display:none; }
+  #log { white-space:pre-wrap; font:12.5px/1.45 ui-monospace,Menlo,Consolas,monospace; background:#07090b; border:1px solid var(--line); border-radius:10px; padding:10px; max-height:300px; overflow:auto; margin-top:8px; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  .pill { display:inline-block; padding:2px 8px; border-radius:99px; background:#2b3138; font-size:13px; }
+  progress { width:100%; height:10px; margin-top:8px; accent-color:var(--volt); }
+  ol { padding-left:20px; margin:6px 0; } li { margin:4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1><b>⚡ VOLT</b> na Galaxy Fit3</h1>
+  <p class="mut">Instalador de apps (.f3x) pelo Chrome do celular, via Bluetooth. Só escreve nos 16 espaços de apps do Hub (<code>/user/hub/a00…a15.f3x</code>) e mais nada.</p>
+
+  <section>
+    <h2>1. Conectar</h2>
+    <p id="support" class="mut">Verificando o navegador…</p>
+    <ol class="mut">
+      <li>Feche o app <b>Galaxy Wearable</b> (a pulseira só aceita uma conexão por vez).</li>
+      <li>Toque em Conectar e escolha <b>Galaxy Fit3</b> na lista.</li>
+    </ol>
+    <button id="bConnect" class="main" disabled>Conectar</button>
+    <p id="port" class="mut"></p>
+  </section>
+
+  <section>
+    <h2>2. Testar a conexão <span class="pill">só leitura</span></h2>
+    <p class="mut">Pergunta à pulseira se existe um app no espaço 0. Não grava nada. Se a pulseira responder (com "sim" ou "não"), o Bluetooth do celular funciona com ela.</p>
+    <button id="bProbe" disabled>Testar</button>
+  </section>
+
+  <section>
+    <h2>3. Instalar ou atualizar um app</h2>
+    <p class="mut">Precisa do firmware com o Hub já instalado, e o Hub precisa ter sido aberto uma vez na pulseira. Um app com o mesmo nome é atualizado no mesmo lugar.</p>
+    <label class="btn" for="file">Escolher arquivo .f3x</label><input id="file" type="file" accept=".f3x,application/octet-stream">
+    <p id="fileInfo" class="mut"></p>
+    <button id="bList" disabled>Ver apps instalados</button>
+    <button id="bInstall" class="main" disabled>Instalar</button>
+    <progress id="prog" value="0" max="1" hidden></progress>
+  </section>
+
+  <section>
+    <h2>Registro</h2>
+    <div id="log"></div>
+  </section>
+  <p class="mut">O firmware (o Hub) é instalado pelo <a href="https://yuriyurin.github.io/fit3-flasher/" style="color:var(--volt)">Fit3 Flasher</a>. Veja o guia no repositório.</p>
+</main>
+<script>
+'use strict';
+const UUID = 'db764ac8-4b08-7f25-aafe-59d03c27bae3';
+const FW_ID = 0xdf60a3cc;            // crc32("R390XXU0AZA3")
+const BLOCK = 39600, SLOTS = 16, HDR = 64, ICON = 2112;
+const SLOT_RE = /^\/user\/hub\/a(0[0-9]|1[0-5])\.f3x$/;
+const enc = new TextEncoder(), dec = new TextDecoder();
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let port = null, busy = false, f3x = null;
+
+function log(msg, cls) { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = msg; $('log').appendChild(d); $('log').scrollTop = 1e9; }
+
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(b) { let c = 0xffffffff; for (let i = 0; i < b.length; i++) c = CRC_T[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+
+/* .f3x header (docs/f3x.md of fit3-toolkit): returns {name, size} or throws */
+function parseF3x(b) {
+  if (b.length < HDR + ICON) throw new Error('arquivo pequeno demais');
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  if (v.getUint32(0, true) !== 0x31583346) throw new Error('não é um .f3x');
+  if (v.getUint16(4, true) !== 1 || v.getUint16(6, true) !== 0) throw new Error('versão de formato desconhecida');
+  if (v.getUint32(8, true) !== FW_ID) throw new Error('feito para outro firmware (precisa ser R390XXU0AZA3)');
+  const img = v.getUint32(12, true), off = v.getUint32(16, true), rel = v.getUint32(20, true);
+  if (img < 16 || img > 32768 || img % 4 || off % 4 || off >= img || rel > 8192) throw new Error('tamanhos inválidos');
+  if (b.length !== HDR + ICON + img + rel) throw new Error('tamanho do arquivo não bate com o cabeçalho');
+  if (crc32(b.subarray(HDR)) !== v.getUint32(24, true)) throw new Error('CRC errado (arquivo corrompido)');
+  let name = ''; for (let i = 28; i < 52 && b[i]; i++) name += String.fromCharCode(b[i]);
+  if (!name) throw new Error('sem nome');
+  return { name, size: b.length };
+}
+
+/* one session over Web Serial (Bluetooth RFCOMM); a pump keeps reading into a buffer */
+class Link {
+  constructor(p) { this.p = p; this.buf = new Uint8Array(0); this.wake = null; this.err = null; }
+  async open() {
+    await this.p.open({ baudRate: 115200, bufferSize: 262144 });
+    this.r = this.p.readable.getReader(); this.w = this.p.writable.getWriter();
+    this.pump = (async () => {
+      try { for (;;) { const { value, done } = await this.r.read(); if (done) break; if (value && value.length) { const n = new Uint8Array(this.buf.length + value.length); n.set(this.buf); n.set(value, this.buf.length); this.buf = n; } this.wake && this.wake(); } }
+      catch (e) { this.err = e; this.wake && this.wake(); }
+    })();
+    await sleep(500);
+  }
+  async close() {
+    try { await this.r.cancel(); } catch {} try { this.r.releaseLock(); } catch {}
+    try { this.w.releaseLock(); } catch {} try { await this.pump; } catch {}
+    try { await this.p.close(); } catch {}
+  }
+  async send(d) { await this.w.write(typeof d === 'string' ? enc.encode(d) : d); }
+  async read(n, ms = 30000) {
+    const end = Date.now() + ms;
+    while (this.buf.length < n) {
+      if (this.err) throw new Error('a pulseira fechou a conexão');
+      const left = end - Date.now(); if (left <= 0) throw new Error('a pulseira não respondeu a tempo');
+      await new Promise(res => { this.wake = res; setTimeout(res, Math.min(left, 250)); }); this.wake = null;
+    }
+    const out = this.buf.slice(0, n); this.buf = this.buf.slice(n); return out;
+  }
+  async drain() { await sleep(300); this.buf = new Uint8Array(0); }
+  async expect(t) { const g = await this.read(t.length); if (dec.decode(g) !== t) { await sleep(500); throw new Error(`esperava "${t}", veio "${dec.decode(g)}${dec.decode(this.buf)}"`); } }
+}
+
+async function session(name, fn) {
+  const L = new Link(port);
+  for (let i = 0; ; i++) {
+    try { await L.open(); break; }
+    catch (e) { try { await port.close(); } catch {} if (i >= 4) throw new Error('não consegui abrir a conexão (' + e.message + '). Feche o Galaxy Wearable e tente de novo.'); await sleep(3000); }
+  }
+  try { return await fn(L); } finally { await L.close(); }
+}
+
+/* reads a file to the end; null when it does not exist */
+async function readRaw(L, path, limit) {
+  await L.drain(); await L.send('061' + path + '\0');
+  const h = await L.read(5, 15000);
+  if (h[0] !== 0x40) { await L.drain(); return null; }
+  const total = new DataView(h.buffer).getUint32(1, false);
+  if (total > limit) { throw new Error(`${path} tem ${total} bytes, acima do limite`); }
+  const data = new Uint8Array(total); let got = 0;
+  while (got < total) {
+    await L.send('062'); const hh = await L.read(5, 15000); const n = new DataView(hh.buffer).getUint32(1, false);
+    if (hh[0] !== 0x40 || n === 0 || n > total - got) throw new Error('bloco inválido na leitura');
+    data.set(await L.read(n, 60000), got); got += n; await L.read(4, 60000);
+  }
+  await L.send('062'); await sleep(100); return data;
+}
+
+async function writeFile(L, data, path, progress) {
+  if (!SLOT_RE.test(path)) throw new Error('caminho recusado: ' + path);   // the only place that writes, and only to the 16 hub slots
+  await L.drain(); await L.send('300'); await L.expect('300');
+  await L.send(`33bin,${path},${data.length}`);
+  try { await L.expect('330'); } catch (e) { throw new Error('a pulseira recusou o arquivo (' + e.message + '). O Hub está instalado e já foi aberto uma vez?'); }
+  for (let off = 0; off < data.length; off += BLOCK) {
+    const blk = data.subarray(off, off + BLOCK), pkt = new Uint8Array(blk.length + 4);
+    pkt.set(blk); new DataView(pkt.buffer).setUint32(blk.length, crc32(blk), true);
+    await L.send(pkt); await L.expect('310'); progress && progress(Math.min(off + BLOCK, data.length) / data.length);
+  }
+  await L.send('32'); await L.expect('320'); await sleep(250); await L.send('34'); await L.expect('340');
+}
+
+const slotPath = n => `/user/hub/a${String(n).padStart(2, '0')}.f3x`;
+async function listSlots(L) {
+  const out = [];
+  for (let n = 0; n < SLOTS; n++) {
+    const d = await readRaw(L, slotPath(n), 65536);
+    if (!d) out.push(null); else { try { out.push({ app: parseF3x(d).name, size: d.length }); } catch { out.push({ free: true }); } }
+    await sleep(250);
+  }
+  return out;
+}
+function showSlots(t) { t.forEach((e, n) => log(`  espaço ${String(n).padStart(2)}  ${!e ? '-' : e.free ? 'livre' : e.app + ' (' + e.size + ' B)'}`)); }
+
+function setBusy(b) { busy = b; render(); }
+function render() {
+  $('bConnect').disabled = busy || !navigator.serial;
+  $('bProbe').disabled = busy || !port;
+  $('bList').disabled = busy || !port;
+  $('bInstall').disabled = busy || !port || !f3x;
+}
+async function run(label, fn) {
+  setBusy(true); log('— ' + label);
+  try { await fn(); } catch (e) { log('ERRO: ' + e.message, 'bad'); } finally { setBusy(false); $('prog').hidden = true; }
+}
+
+$('bConnect').onclick = () => run('conectar', async () => {
+  port = await navigator.serial.requestPort({ filters: [{ bluetoothServiceClassId: UUID }], allowedBluetoothServiceClassIds: [UUID] });
+  $('port').textContent = 'Pulseira escolhida. Agora teste a conexão.'; log('pulseira escolhida', 'ok');
+});
+$('bProbe').onclick = () => run('teste de conexão (só leitura)', async () => {
+  const r = await session('teste', async L => {
+    const d = await readRaw(L, slotPath(0), 65536);
+    return d ? `existe um arquivo no espaço 0 (${d.length} B)` : 'não há app no espaço 0';
+  });
+  log('A pulseira respondeu: ' + r, 'ok'); log('Conexão funcionando ✔', 'ok');
+});
+$('bList').onclick = () => run('apps instalados', async () => { showSlots(await session('lista', listSlots)); });
+$('file').onchange = async e => {
+  const f = e.target.files[0]; f3x = null; render(); if (!f) return;
+  const b = new Uint8Array(await f.arrayBuffer());
+  try { const i = parseF3x(b); f3x = { bytes: b, ...i }; $('fileInfo').innerHTML = ''; $('fileInfo').textContent = `${f.name}: app "${i.name}", ${i.size} bytes, CRC ok, firmware R390XXU0AZA3 ✔`; }
+  catch (err) { $('fileInfo').textContent = `${f.name}: recusado (${err.message})`; }
+  render();
+};
+$('bInstall').onclick = () => run(`instalar ${f3x.name}`, async () => {
+  const table = await session('olhar', listSlots); showSlots(table);
+  let n = table.findIndex(e => e && e.app === f3x.name);
+  if (n >= 0) log(`"${f3x.name}" já está no espaço ${n}: vai ser atualizado`);
+  else { n = table.findIndex(e => !e || e.free); if (n < 0) throw new Error('os 16 espaços estão ocupados: remova um app no Hub (toque longo)'); }
+  const path = slotPath(n); log(`gravando ${path} (${f3x.size} bytes)…`);
+  $('prog').hidden = false; $('prog').value = 0;
+  await sleep(2200); await session('gravar', L => writeFile(L, f3x.bytes, path, p => $('prog').value = p));
+  await sleep(2200);
+  const back = await session('conferir', L => readRaw(L, path, 65536));
+  if (!back || back.length !== f3x.bytes.length || back.some((x, i) => x !== f3x.bytes[i])) throw new Error('o arquivo na pulseira não confere: tente de novo (um arquivo pela metade é ignorado pelo Hub)');
+  log(`"${f3x.name}" instalado no espaço ${n} ✔ Ele aparece na próxima vez que você abrir o Hub.`, 'ok');
+});
+
+(function init() {
+  const ok = window.isSecureContext && !!navigator.serial;
+  $('support').innerHTML = ok ? '<span class="ok">✔ Este navegador tem Web Serial (Bluetooth).</span>'
+    : '<span class="bad">✘ Este navegador não tem Web Serial. Use o Chrome atualizado (versão 138 ou mais nova) no Android, por HTTPS.</span>';
+  render();
+})();
+</script>
+</body>
+</html>
