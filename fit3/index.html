@@ -426,7 +426,7 @@ async function saveManifest(have) { await sleep(2200); await session('registro',
 async function sync() {
   const sum = [];
   $('prog').hidden = false; $('prog').value = 0.02;
-  const r = await fetch(SITE + 'manifest.json', { cache: 'no-store' }); if (!r.ok) throw new Error('sem internet? não consegui ver as versões novas');
+  const r = await fetch(SITE + 'manifest.json?t=' + Date.now(), { cache: 'no-store' }); if (!r.ok) throw new Error('sem internet? não consegui ver as versões novas');
   const man = await r.json(), CAT = JSON.parse(dec.decode(await fetchBytes(man.cat.file, man.cat.sha)));
   log('lendo a pulseira…');
   const [logB, manB, runB] = await session('ler', async L => { const a = await readRaw(L, LOG_PATH, 65536); await sleep(200); const m = await readRaw(L, MAN_PATH, 65536); await sleep(200); return [a, m, await readRaw(L, RUN_LOG, 65536)]; });
