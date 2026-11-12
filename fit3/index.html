@@ -73,7 +73,7 @@
 const UUID = 'db764ac8-4b08-7f25-aafe-59d03c27bae3';
 const FW_ID = 0xdf60a3cc;            // crc32("R390XXU0AZA3")
 const BLOCK = 39600, SLOTS = 16, HDR = 64, ICON = 2112;
-const SLOT_RE = /^\/user\/hub\/a(0[0-9]|1[0-5])\.f3x$/, ART_RE = /^\/user\/hub\/e_[a-z0-9_]{1,24}\.art$/, LOG_PATH = '/user/volt.log', DAT_PATH = '/user/hub/volt.dat', MAN_PATH = '/user/hub/sync.txt';
+const SLOT_RE = /^\/user\/hub\/a(0[0-9]|1[0-5])\.f3x$/, ART_RE = /^\/user\/hub\/e_[a-z0-9_]{1,24}\.art$/, LOG_PATH = '/user/volt.log', DAT_PATH = '/user/hub/volt.dat', MAN_PATH = '/user/hub/sync.txt', RUN_LOG = '/user/corrida.log', RUN_DAT = '/user/hub/corrida.dat';
 const enc = new TextEncoder(), dec = new TextDecoder();
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -157,7 +157,7 @@ async function readRaw(L, path, limit) {
 }
 
 async function writeFile(L, data, path, progress) {
-  if (!SLOT_RE.test(path) && !ART_RE.test(path) && ![LOG_PATH, DAT_PATH, MAN_PATH].includes(path)) throw new Error('caminho recusado: ' + path);   // the only place that writes: hub slots, VOLT files
+  if (!SLOT_RE.test(path) && !ART_RE.test(path) && ![LOG_PATH, DAT_PATH, MAN_PATH, RUN_LOG, RUN_DAT].includes(path)) throw new Error('caminho recusado: ' + path);   // the only place that writes: hub slots, VOLT files
   await L.drain(); await L.send('300'); await L.expect('300');
   await L.send(`33bin,${path},${data.length}`);
   try { await L.expect('330'); } catch (e) { throw new Error('a pulseira recusou o arquivo (' + e.message + '). O Hub está instalado e já foi aberto uma vez?'); }
@@ -229,6 +229,103 @@ function voltDat(S, CAT, stamp) {
     });
   });
   return out;
+}
+
+/* ---- the running plan for the Corrida app: /user/hub/corrida.dat (layout in apps/corrida.c: RunHdr 64 bytes, then RunSes 288 bytes each) ----
+   The pace math is VOLT 3's own (Daniels' VDOT from the best recent run, its training paces and the session's average target, alvoMedio). */
+const RN = { HDR: 64, REC: 288, MAX: 24 };
+const rnIso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+const rnObj = iso => new Date(iso + 'T12:00:00');
+const rnAdd = (iso, n) => { const d = rnObj(iso); d.setDate(d.getDate() + n); return rnIso(d); };
+const rnWeek = iso => { const d = rnObj(iso); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return rnIso(d); };
+const rnO2 = v => -4.6 + 0.182258 * v + 104e-6 * v * v;
+const rnFrac = t => 0.8 + 0.1894393 * Math.exp(-0.012778 * t) + 0.2989558 * Math.exp(-0.1932605 * t);
+const rnVel = vo2 => { const a = 104e-6, b = 0.182258, c = -4.6 - vo2; return (-b + Math.sqrt(b * b - 4 * a * c)) / (2 * a); };
+const rnVdot = (km, seg) => { const t = seg / 60, v = km * 1e3 / t; return rnO2(v) / rnFrac(t); };
+const rnPaceF = (vdot, f) => 60000 / rnVel(vdot * f);
+function rnPrev(vdot, km) { let lo = km * 60 * 1.5, hi = km * 60 * 15; for (let i = 0; i < 80; i++) { const m = (lo + hi) / 2; if (rnVdot(km, m) > vdot) lo = m; else hi = m; } return (lo + hi) / 2; }
+function rnRitmos(vdot) { const I = rnPaceF(vdot, 0.975); return { facil: [rnPaceF(vdot, 0.74), rnPaceF(vdot, 0.59)], maratona: rnPrev(vdot, 42.195) / 42.195, limiar: rnPaceF(vdot, 0.88), intervalado: I }; }
+function rnRuns(S) {                                              /* VOLT 3's corridas(): every done set with km and minutes */
+  const out = []; (S.sessions || []).forEach(s => (s.items || []).forEach(it => (it.sets || []).forEach(x => {
+    if (x.done === false) return; const km = +x.km || 0, min = +x.min || 0; if (km >= 0.4 && min > 0) out.push({ date: s.date, km, paceSecs: min * 60 / km, min }); })));
+  return out.sort((a, b) => a.date < b.date ? -1 : 1);
+}
+function rnVdotAtleta(cs, today) {
+  if (!cs.length) return null; const corte = rnAdd(today, -60), rec = cs.filter(a => a.date >= corte && a.km >= 2), pool = rec.length ? rec : cs.slice(-6);
+  let best = null, bt = Infinity; pool.forEach(a => { const t10 = a.paceSecs * a.km * Math.pow(10 / a.km, 1.06); if (t10 < bt) { bt = t10; best = a; } });
+  return best ? rnVdot(best.km, best.paceSecs * best.km) : null;
+}
+function rnAlvo(it, r) {
+  if (!r) return 0; const f = (r.facil[0] + r.facil[1]) / 2;
+  return ({ leve: f, longo: r.facil[0] + 5, regen: r.facil[0] * 1.08, prog: (r.facil[0] + r.limiar) / 2,
+    limiar: (r.limiar * Math.max(2, it.km - 3) + r.facil[0] * 3) / Math.max(it.km, 1), intervalo: r.facil[0] - 15, prova: r.limiar * 1.02 })[it.tipo] || f;
+}
+const rnS = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const rnKm = k => String(Math.round(k * 10) / 10);
+/* the blocks, short enough for one line on the band (VOLT 3's blocos(), the same splits) */
+function rnBlocos(tipo, km, r) {
+  const z = p => rnS(p) + '/km';
+  if (tipo === 'regen') return [[km, `${rnKm(km)} km bem leve`, r ? `Z1  ${z(r.facil[0] * 1.08)}` : 'Z1  conversando']];
+  if (tipo === 'leve') return [[km, `${rnKm(km)} km continuo`, r ? `Z2  ${rnS(r.facil[1])}-${z(r.facil[0])}` : 'Z2  leve, conversando']];
+  if (tipo === 'longo') { const m = Math.max(0, Math.round(km * 0.25)); return m >= 2 && r ? [[km - m, `${rnKm(km - m)} km leve`, `Z2  ${rnS(r.facil[1])}-${z(r.facil[0])}`], [m, `${m} km ritmo maratona`, `Z3/Z4  ${z(r.maratona)}`]]
+    : [[km, `${rnKm(km)} km longo constante`, r ? `Z2  ${z(r.facil[0])}` : 'Z2  no conforto']]; }
+  if (tipo === 'prog') { const t = Math.max(2, Math.round(km * 0.4)); return [[km - t, `${rnKm(km - t)} km soltando`, r ? `Z2  ${z(r.facil[0])}` : 'Z2  leve'], [t, `${t} km acelerando`, r ? `ate Z4  ${z(r.limiar)}` : 'termina forte']]; }
+  if (tipo === 'limiar') { const t = Math.max(2, km - 3); return [[2, '2 km aquecimento', r ? `Z2  ${z(r.facil[0])}` : 'Z2  solta as pernas'], [t, `${rnKm(t)} km em limiar`, r ? `Z4  ${z(r.limiar)}` : 'Z4  forte, controlado'], [1, '1 km desaquecendo', r ? `Z2  ${z(r.facil[0])}` : 'Z2  leve']]; }
+  if (tipo === 'intervalo') { const reps = Math.max(4, Math.min(8, Math.round((km - 3.5) / 0.5))); return [[2, '2 km aquecimento', r ? `Z2  ${z(r.facil[0])}` : 'Z2  progressivo'],
+    [Math.max(0.5, km - 3.5), `${reps}x 400 m forte`, r ? `Z5  ${z(r.intervalado)}` : 'Z5  trote entre tiros'], [1.5, '1.5 km desaquecendo', r ? `Z2  ${z(r.facil[0])}` : 'Z2  leve']]; }
+  if (tipo === 'prova') return [[km, `Prova ${rnKm(km)} km`, 'Vai com tudo!']];
+  return [[km, `${rnKm(km)} km`, '']];
+}
+const RN_TIPO = { leve: ['Leve', 'Z2'], longo: ['Longao', 'Z2'], prog: ['Progressivo', 'Z2-Z4'], limiar: ['Limiar', 'Z4'], intervalo: ['Intervalado', 'Z5'], regen: ['Regenerativo', 'Z1'], prova: ['PROVA', 'Z4'] };
+const RN_GOAL = { '5k': 'Plano 5 km', '10k': 'Plano 10 km', '21k': 'Meia maratona', '42k': 'Maratona', base: 'Base e saude' };
+function corridaDat(S, today) {
+  const R = S.run; if (!R || !Array.isArray(R.weeks)) return null;
+  const all = R.weeks.flatMap(w => (w.items || []).filter(i => i && i.date && i.tipo));
+  const from = rnAdd(rnWeek(today), -7), to = rnAdd(rnWeek(today), 20);
+  let ses = all.filter(i => i.date >= from && i.date <= to).sort((a, b) => a.date < b.date ? -1 : 1);
+  if (!ses.length) ses = all.filter(i => i.date >= today).slice(0, 6);
+  ses = ses.slice(0, RN.MAX); if (!ses.length) return null;
+  const cs = rnRuns(S), vd = rnVdotAtleta(cs, today), r = vd ? rnRitmos(vd) : null;
+  const doneOn = {}; cs.forEach(c => doneOn[c.date] = (doneOn[c.date] || 0) + c.km);
+  const out = new Uint8Array(RN.HDR + ses.length * RN.REC), v = new DataView(out.buffer);
+  const str = (off, s, n) => { const t = vdPlain(String(s).replace(/[·–—]/g, '-').replace(/→/g, '>').replace(/×/g, 'x'), n); for (let k = 0; k < t.length && k < n - 1; k++) out[off + k] = t.charCodeAt(k); };
+  const wk0 = rnWeek(ses[0].date);
+  let ti = ses.findIndex(i => i.date >= today); if (ti < 0) ti = ses.length - 1;
+  out.set([0x52, 0x55, 0x4e, 0x31]); v.setUint16(4, ses.length, true); v.setUint16(6, RN.REC, true); str(8, today.slice(8, 10) + '/' + today.slice(5, 7), 8);
+  const tw = rnWeek(today); let wp = 0, wd = 0;
+  ses.forEach(i => { if (rnWeek(i.date) === tw) wp += +i.km || 0; }); Object.keys(doneOn).forEach(d => { if (rnWeek(d) === tw) wd += doneOn[d]; });
+  v.setUint16(16, ti, true); v.setUint16(18, Math.min(65535, Math.round(wp * 10)), true); v.setUint16(20, Math.min(65535, Math.round(wd * 10)), true);
+  const L = cs[cs.length - 1]; if (L) { v.setUint16(22, Math.min(65535, Math.round(L.km * 100)), true); v.setUint16(24, Math.min(65535, Math.round(L.paceSecs)), true); str(26, L.date.slice(8, 10) + '/' + L.date.slice(5, 7), 6); }
+  str(32, (RN_GOAL[R.goal] || R.goal || 'Corrida') + (R.raceDate ? ' ' + R.raceDate.slice(8, 10) + '/' + R.raceDate.slice(5, 7) : ''), 32);
+  ses.forEach((it, k) => {
+    const o = RN.HDR + k * RN.REC, km = +it.km || 0, bl = rnBlocos(it.tipo, km, r).slice(0, 3), tn = RN_TIPO[it.tipo] || ['Corrida', ''];
+    str(o, it.date, 12); out[o + 12] = rnObj(it.date).getDay(); out[o + 13] = bl.length; out[o + 14] = Math.round((rnObj(rnWeek(it.date)) - rnObj(wk0)) / 6048e5);
+    str(o + 16, tn[0], 14); str(o + 30, tn[1], 6);
+    v.setUint16(o + 36, Math.min(65535, Math.round(km * 10)), true); v.setUint16(o + 38, Math.min(65535, Math.round(rnAlvo(it, r))), true);
+    v.setUint16(o + 40, Math.min(65535, Math.round((doneOn[it.date] || 0) * 100)), true);
+    bl.forEach(([bk, t, d], j) => { v.setUint16(o + 42 + 2 * j, Math.min(65535, Math.round(bk * 10)), true); str(o + 48 + 80 * j, t, 40); str(o + 88 + 80 * j, d, 40); });
+  });
+  return out;
+}
+/* the runs saved on the band ("RUN1 <seq> <date> <km x 100> <seconds>") into VOLT, as Registrar corrida does on the phone */
+function parseRunLog(t) {
+  const out = []; t.split('\n').forEach(l => { const m = /^RUN1 (\d+) (\d{4}-\d\d-\d\d) (\d+) (\d+)$/.exec(l.trim()); if (m) out.push({ seq: +m[1], date: m[2], km100: +m[3], secs: +m[4] }); });
+  return out;
+}
+const runKey = b => 'run|' + b.seq + '|' + b.date + '|' + b.km100 + '|' + b.secs;
+function importRuns(st, runs, today) {
+  const { S } = st; S.fit3Seen = S.fit3Seen || []; let n = 0;
+  const kgs = (S.metrics || []).filter(m => m.key === 'peso').sort((a, b) => a.date < b.date ? -1 : 1), kg = kgs.length ? +kgs[kgs.length - 1].v : (+(S.settings || {}).bw || 75);
+  runs.forEach(b => {
+    if (S.fit3Seen.includes(runKey(b)) || b.km100 < 10 || b.secs < 60) return;
+    const km = Math.round(b.km100) / 100, min = Math.round(b.secs / 6) / 10, pace = min / km, date = b.date <= today ? b.date : today;
+    const end = date === today ? Date.now() : rnObj(date).getTime() + 7 * 3600e3;
+    const it = { id: uid(), exId: 'corrida', note: '', sets: [{ id: uid(), t: 'n', w: null, r: null, min, km, sec: null, done: true }] };
+    S.sessions.push({ id: uid(), date, title: 'Corrida', items: [it], start: end - min * 60000, end, note: '', dur: min, kcal: Math.round(kg * km * (3.5 * pace + 200) / 200), run: { km, pace }, fit3: true });
+    S.fit3Seen.push(runKey(b)); n++;
+    log(`  Corrida ${date.slice(8, 10)}/${date.slice(5, 7)}: ${km} km em ${rnS(b.secs)}`, 'ok');
+  });
+  return n;
 }
 
 const SITE = 'sync/';                                             // published next to this page: manifest.json and the files it lists
@@ -331,7 +428,7 @@ async function sync() {
   const r = await fetch(SITE + 'manifest.json', { cache: 'no-store' }); if (!r.ok) throw new Error('sem internet? não consegui ver as versões novas');
   const man = await r.json(), CAT = JSON.parse(dec.decode(await fetchBytes(man.cat.file, man.cat.sha)));
   log('lendo a pulseira…');
-  const [logB, manB] = await session('ler', async L => { const a = await readRaw(L, LOG_PATH, 65536); await sleep(200); return [a, await readRaw(L, MAN_PATH, 65536)]; });
+  const [logB, manB, runB] = await session('ler', async L => { const a = await readRaw(L, LOG_PATH, 65536); await sleep(200); const m = await readRaw(L, MAN_PATH, 65536); await sleep(200); return [a, m, await readRaw(L, RUN_LOG, 65536)]; });
   let have = {}; try { if (manB) have = JSON.parse(dec.decode(manB)) || {}; } catch (e) { have = {}; }
   $('prog').value = 0.08;
 
@@ -348,6 +445,16 @@ async function sync() {
       log('mandando os treinos para a pulseira…'); await sleep(2200); await session('treinos', L => writeFile(L, dat, DAT_PATH));
       have['volt.dat'] = h; manPending = true; sum.push(`${new DataView(dat.buffer).getUint16(4, true)} treinos do VOLT na pulseira`);
     } else sum.push('Treinos da pulseira já estavam em dia');
+    // the runs: band -> VOLT, then the plan -> band
+    const runs = runB ? parseRunLog(dec.decode(runB)) : [], today = todayIso();
+    const nr = importRuns(st, runs, today);
+    if (nr) { const js = JSON.stringify(st.S); localStorage.setItem('volt_v3', js); await idbPut('state', js); sum.push(`${nr} corrida(s) da pulseira lançada(s) no VOLT`); }
+    if (runs.length) { await sleep(2200); await session('limpar corridas', L => writeFile(L, enc.encode('#\n'), RUN_LOG)); }
+    const rdat = corridaDat(st.S, today);
+    if (!rdat) sum.push('Corrida: crie o plano na aba Corrida do VOLT para ele ir para a pulseira');
+    else { const rh = await sha(rdat);
+      if (have['corrida.dat'] !== rh) { log('mandando o plano de corrida…'); await sleep(2200); await session('corrida', L => writeFile(L, rdat, RUN_DAT)); have['corrida.dat'] = rh; manPending = true; sum.push('Plano de corrida na pulseira'); }
+      else sum.push('Plano de corrida já estava em dia'); }
   }
   $('prog').value = 0.15;
 

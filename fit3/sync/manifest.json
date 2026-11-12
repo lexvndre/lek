@@ -3,7 +3,7 @@
   {
    "file": "volt.f3x",
    "title": "VOLT",
-   "sha": "d256bf5aa50d49cc99b620f7199349144af28b28032b802bd09af5544a6f9d3b"
+   "sha": "83f3d77aa7184a803e075bfdef62d7a9e5d8974669f3d678ac793648e99a4b4f"
   },
   {
    "file": "intervalo.f3x",
@@ -18,7 +18,12 @@
   {
    "file": "agua.f3x",
    "title": "Agua",
-   "sha": "c2c0f3b1cb46d695ea40e0097cb5f40b8614b6d44ce6ab070e0990f1b68ccc77"
+   "sha": "157eac6f960ffbba133979d665b85bfce782e9a0de0bcc3c580f712da6af0171"
+  },
+  {
+   "file": "corrida.f3x",
+   "title": "Corrida",
+   "sha": "7e153d6f9688baae255fdfbd93c882ffbeb4c1d91fc2ed40ae1b79a5c2856867"
   }
  ],
  "art": {
