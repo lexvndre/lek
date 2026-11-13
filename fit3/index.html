@@ -556,6 +556,14 @@ async function sync() {
   } else sum.push('Apps já estavam em dia');
   $('prog').value = 0.25;
 
+  // 3b. the files an app reads (Trilha's text): only what changed, and only into /user/hub
+  for (const d of man.data || []) {
+    if (!/^\/user\/hub\/[a-z0-9_]{1,24}\.dat$/.test(d.path) || have[d.file] === d.sha) continue;
+    log(`mandando ${d.title || d.file}…`); const b = await fetchBytes(d.file, d.sha);
+    await sleep(2200); await session('dados', L => writeFile(L, b, d.path));
+    have[d.file] = d.sha; await saveManifest(have); sum.push(`${d.title || d.file} na pulseira`);
+  }
+
   // 4. drawings and tips, only the files that changed
   if (have.art !== man.art.sha) {
     const files = parseArt(await fetchBytes(man.art.file, man.art.sha)); have.files = have.files || {};
