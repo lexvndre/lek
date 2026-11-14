@@ -81,7 +81,7 @@
 const UUID = 'db764ac8-4b08-7f25-aafe-59d03c27bae3';
 const FW_ID = 0xdf60a3cc;            // crc32("R390XXU0AZA3")
 const BLOCK = 39600, SLOTS = 16, HDR = 64, ICON = 2112;
-const SLOT_RE = /^\/user\/hub\/a(0[0-9]|1[0-5])\.f3x$/, ART_RE = /^\/user\/hub\/e_[a-z0-9_]{1,24}\.art$/, LOG_PATH = '/user/volt.log', DAT_PATH = '/user/hub/volt.dat', MAN_PATH = '/user/hub/sync.txt', RUN_LOG = '/user/corrida.log', RUN_DAT = '/user/hub/corrida.dat', ALT_DAT = '/user/hub/alt.dat', DIA_LOG = '/user/diario.log', PROG_DAT = '/user/hub/prog.dat', AGUA_SAV = '/user/agua.sav';
+const SLOT_RE = /^\/user\/hub\/a(0[0-9]|1[0-5])\.f3x$/, ART_RE = /^\/user\/hub\/e_[a-z0-9_]{1,24}\.art$/, LOG_PATH = '/user/volt.log', DAT_PATH = '/user/hub/volt.dat', MAN_PATH = '/user/hub/sync.txt', RUN_LOG = '/user/corrida.log', RUN_DAT = '/user/hub/corrida.dat', ALT_DAT = '/user/hub/alt.dat', DIA_LOG = '/user/diario.log', PROG_DAT = '/user/hub/prog.dat', AGUA_SAV = '/user/agua.sav', DATA_RE = /^\/user\/hub\/[a-z0-9_]{1,24}\.dat$/;   // DATA_RE: the files an app reads (manifest.data), e.g. Trilha's text
 const enc = new TextEncoder(), dec = new TextDecoder();
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -165,7 +165,7 @@ async function readRaw(L, path, limit) {
 }
 
 async function writeFile(L, data, path, progress) {
-  if (!SLOT_RE.test(path) && !ART_RE.test(path) && ![LOG_PATH, DAT_PATH, MAN_PATH, RUN_LOG, RUN_DAT, ALT_DAT, DIA_LOG, PROG_DAT].includes(path)) throw new Error('caminho recusado: ' + path);   // the only place that writes: hub slots, VOLT files
+  if (!SLOT_RE.test(path) && !ART_RE.test(path) && !DATA_RE.test(path) && ![LOG_PATH, DAT_PATH, MAN_PATH, RUN_LOG, RUN_DAT, ALT_DAT, DIA_LOG, PROG_DAT].includes(path)) throw new Error('caminho recusado: ' + path);   // the only place that writes: hub slots, VOLT files
   await L.drain(); await L.send('300'); await L.expect('300');
   await L.send(`33bin,${path},${data.length}`);
   try { await L.expect('330'); } catch (e) { throw new Error('a pulseira recusou o arquivo (' + e.message + '). O Hub está instalado e já foi aberto uma vez?'); }
@@ -558,9 +558,11 @@ async function sync() {
 
   // 3b. the files an app reads (Trilha's text): only what changed, and only into /user/hub
   for (const d of man.data || []) {
-    if (!/^\/user\/hub\/[a-z0-9_]{1,24}\.dat$/.test(d.path) || have[d.file] === d.sha) continue;
+    if (!DATA_RE.test(d.path) || have[d.file] === d.sha) continue;
     log(`mandando ${d.title || d.file}…`); const b = await fetchBytes(d.file, d.sha);
     await sleep(2200); await session('dados', L => writeFile(L, b, d.path));
+    await sleep(2200); const back = await session('conferir', L => readRaw(L, d.path, 262144));
+    if (!same(back, b)) throw new Error(`${d.title || d.file}: o arquivo na pulseira não confere, sincronize de novo`);
     have[d.file] = d.sha; await saveManifest(have); sum.push(`${d.title || d.file} na pulseira`);
   }
 
