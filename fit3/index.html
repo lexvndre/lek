@@ -277,6 +277,7 @@ function voltDat(S, CAT, stamp, today) {
   const WSZ = VD.WHDR + VD.MAX_EX * VD.VEX, buf = new Uint8Array(16 + ws.length * WSZ), v = new DataView(buf.buffer);
   const str = (off, s, n) => { const t = vdPlain(s, n); for (let k = 0; k < t.length && k < n - 1; k++) buf[off + k] = t.charCodeAt(k); };
   buf.set([0x56, 0x44, 0x54, 0x32]); v.setUint16(4, ws.length, true); v.setUint16(6, VD.VEX, true); str(8, stamp, 8);
+  { const th = ['volt', 'eletrico', 'brasa', 'ametista', 'ouro'].indexOf((S.temp && S.temp.theme) || 'volt'); buf[14] = th >= 0 ? th + 1 : 1; }   // the phone's colour theme (volt.c VT)
   ws.forEach((w, wi) => {
     const o = 16 + wi * WSZ; str(o, w.title, VD.TITLE); buf[o + VD.TITLE] = w.items.length; buf[o + VD.TITLE + 1] = (w.gal ? 1 : 0) | (w.fav ? 2 : 0);
     v.setUint16(o + VD.TITLE + 2, Math.min(999, w.est || 0), true); v.setUint32(o + VD.TITLE + 4, vdYmd(w.date), true);
