@@ -51,6 +51,14 @@
     <p id="sum" class="mut"></p>
   </section>
 
+  <section>
+    <details id="appsBox">
+      <summary>Apps na pulseira</summary>
+      <p class="mut">Desmarque o que você não usa: no próximo Sincronizar ele sai da pulseira (dá para marcar de novo e ele volta). Na pulseira os apps aparecem em grupos: Treino, Celular, Jogos e Estudo.</p>
+      <div id="appPick" class="mut">Abra esta página com internet para ver a lista.</div>
+    </details>
+  </section>
+
   <section id="snsBox" hidden>
     <h2>Sensores: leituras para mandar</h2>
     <p class="mut">O app Sensores gravou leituras na pulseira. Toque em Copiar e cole na conversa com o Claude.</p>
@@ -496,6 +504,22 @@ async function importWorkouts(st, blocks) {
   return fresh.length;
 }
 
+/* the apps Lek wants on the band: a list of the unchecked ones in localStorage "fit3_off" (Sensores is a test app: off unless checked) */
+function pickedOff() { try { const v = JSON.parse(localStorage.getItem('fit3_off')); if (Array.isArray(v)) return v; } catch (e) { } return ['Sensores']; }
+async function showPicker() {
+  try {
+    const r = await fetch(SITE + 'manifest.json?t=' + Date.now(), { cache: 'no-store' }); if (!r.ok) return;
+    const man = await r.json(), off = pickedOff(), box = $('appPick'); box.innerHTML = '';
+    man.apps.forEach(a => {
+      const l = document.createElement('label'); l.style.cssText = 'display:flex;gap:10px;align-items:center;padding:8px 0;font-size:16px;color:var(--tx)';
+      const c = document.createElement('input'); c.type = 'checkbox'; c.checked = !off.includes(a.title); c.style.cssText = 'width:22px;height:22px';
+      c.onchange = () => { const o = pickedOff().filter(x => x !== a.title); if (!c.checked) o.push(a.title); localStorage.setItem('fit3_off', JSON.stringify(o)); };
+      l.append(c, document.createTextNode(a.title)); box.appendChild(l);
+    });
+  } catch (e) { }
+}
+showPicker();
+
 let manPending = false;
 async function saveManifest(have) { await sleep(2200); await session('registro', L => writeFile(L, enc.encode(JSON.stringify(have)), MAN_PATH)); manPending = false; }
 
@@ -549,7 +573,13 @@ async function sync() {
   // what is really on the band decides (a new firmware leaves the Hub empty), not what this page remembers sending
   log('conferindo os apps da pulseira…');
   const table = await session('olhar', listSlots);
-  const apps = man.apps.filter(a => !table.some(e => e && e.app === a.title && e.sha === a.sha));
+  const skip = pickedOff();
+  for (let n = 0; n < table.length; n++) {                        // the apps Lek unchecked leave the band: the Hub's own "removed" mark in their slot
+    const e = table[n]; if (!e || e.free || !skip.includes(e.app)) continue;
+    log(`  tirando ${e.app} da pulseira…`); await sleep(2200); await session('remover', L => writeFile(L, enc.encode('F3X-GONE'), slotPath(n)));
+    table[n] = { free: true }; sum.push(`${e.app} saiu da pulseira`);
+  }
+  const apps = man.apps.filter(a => !skip.includes(a.title) && !table.some(e => e && e.app === a.title && e.sha === a.sha));
   if (apps.length) {
     log(`instalando ${apps.length} app(s)…`);
     for (const a of apps) { const b = await fetchBytes(a.file, a.sha), f = { bytes: b, ...parseF3x(b) }; await installF3x(f, table); have[a.file] = a.sha; }
