@@ -212,12 +212,17 @@ function showSlots(t) { t.forEach((e, n) => log(`  espaço ${String(n).padStart(
 
 
 /* volt.dat from the VOLT on the phone: the same bytes as fit3/gen_volt_data.py (volt_dat) */
-const VD = { MAX_W: 5, MAX_EX: 10, MAX_SET: 6, NAME: 34, TITLE: 22, MUSC: 20, ID: 24, VEX: 106, SKIP: ['corrida'] };
+const VD = { MAX_W: 8, MAX_EX: 10, MAX_SET: 6, NAME: 34, TITLE: 40, MUSC: 20, ID: 24, VEX: 106, WHDR: 48, RECENT: 21, SKIP: ['corrida'] };
 const VD_BAR20 = 'agach_bb agach_frontal desenv_barra elev_pelv good_morning hip_thrust levant_terra_sumo rem_curv_bb sup_fechado sup_incl_bb sup_reto_bb terra_convencional terra_rom'.split(' '), VD_NOBAR = ['leg_press', 'hack'];
 const vdPlates = i => VD_BAR20.includes(i) ? 21 : VD_NOBAR.includes(i) ? 1 : 0;      // the "art" byte of VEx: plates per side (gen_volt_data.py has the same list)
 const vdPlain = (s, n) => { s = String(s || '').normalize('NFKD').replace(/[^\x00-\x7f]/g, '').replace(/\s+/g, ' ').trim().replace(/\\/g, '/').replace(/"/g, "'"); return n ? s.slice(0, n - 1) : s; };
 const vdE1 = (w, r) => (w <= 0 || r <= 0) ? 0 : (r === 1 ? w : w * (1 + Math.min(r, 20) / 30));
-function voltDat(S, CAT, stamp) {
+const vdYmd = iso => /^\d{4}-\d{2}-\d{2}$/.test(iso || '') ? Number(iso.replace(/-/g, '')) : 0;
+const vdDays = (a, b) => Math.round((Date.UTC(+a.slice(0, 4), +a.slice(5, 7) - 1, +a.slice(8, 10)) - Date.UTC(+b.slice(0, 4), +b.slice(5, 7) - 1, +b.slice(8, 10))) / 864e5);
+/* the band's workouts (gen_volt_data.py workouts()): every workout of the gallery (Treinos), in its order, with the loads of each exercise's most recent session,
+   so a workout made on the phone reaches the band before it is ever done; then the other titles done in the last VD.RECENT days. today: "2026-11-14" */
+function voltDat(S, CAT, stamp, today) {
+  today = today || rnIsoToday();
   const custom = {}; (S.customEx || []).forEach(c => { if (c && typeof c === 'object') custom[c.id] = c.n || c.name; });
   const best = {}, last = {};
   const ses = (S.sessions || []).map((s, i) => [s, i]).sort((a, b) => { const x = a[0].date || '', y = b[0].date || ''; if (x !== y) return x < y ? -1 : 1; const ex = a[0].end || 0, ey = b[0].end || 0; return ex !== ey ? ex - ey : a[1] - b[1]; }).map(x => x[0]);
@@ -230,45 +235,70 @@ function voltDat(S, CAT, stamp) {
     const top = work.reduce((a, b) => (b[0] > a[0] || (b[0] === a[0] && b[1] > a[1])) ? b : a);
     return top[1] >= 12 ? [Math.round((top[0] + step) * 4) / 4, Math.max(6, top[1] - 4)] : [top[0], top[1] + 1]; };
   const steps = S.stepEx || {}, set = S.settings || {}, dstep = Number(set.step) || 1, restEx = S.restEx || {};
-  const latest = new Map();
+  const exItem = (i, rest, sets) => { const c = CAT[i], step = Number(steps[i]) || dstep, [sw, sr] = sug(last[i], step);
+    return { id: i, name: c ? c[0] : (custom[i] || i), musc: c ? c[1] : '', rest: Math.trunc(Number(rest || restEx[i] || set.rest || 75)), sets: sets.slice(0, VD.MAX_SET),
+      step10: Math.max(1, Math.min(255, Math.round(step * 10))), best10: Math.min(65535, Math.round((best[i] || 0) * 10)), sw10: Math.round(sw * 10), sr: Math.min(255, sr) }; };
+  const estMin = items => Math.floor(items.reduce((a, e) => a + e.sets.length * (e.rest + 40), 0) / 60);
+  const latest = new Map(), done = {};
   (S.sessions || []).forEach(s => {
     const title = String(s.title || '').trim(); if (!title || VD.SKIP.includes(title.toLowerCase())) return;
+    if ((s.date || '') > (done[title] || '')) done[title] = s.date || '';
     const items = [];
     (s.items || []).forEach(it => {
       const sets = (it.sets || []).filter(x => (x.t || 'n') !== 'w' && (x.r || x.w)); if (!sets.length) return;
-      const i = it.exId || '?', c = CAT[i], step = Number(steps[i]) || dstep, [sw, sr] = sug(last[i], step);
-      items.push({ id: i, name: c ? c[0] : (custom[i] || i), musc: c ? c[1] : '', rest: Math.trunc(Number(it.rest || restEx[i] || set.rest || 75)),
-        sets: sets.map(x => [Math.round((Number(x.w) || 0) * 10), Math.trunc(Number(x.r) || 0)]).slice(0, VD.MAX_SET),
-        step10: Math.max(1, Math.min(255, Math.round(step * 10))), best10: Math.min(65535, Math.round((best[i] || 0) * 10)), sw10: Math.round(sw * 10), sr: Math.min(255, sr) });
+      items.push(exItem(it.exId || '?', it.rest, sets.map(x => [Math.round((Number(x.w) || 0) * 10), Math.trunc(Number(x.r) || 0)])));
     });
     if (!items.length) return;
     const prev = latest.get(title);
     if (!prev || (s.date || '') >= prev.date) latest.set(title, { title, date: s.date || '', items: items.slice(0, VD.MAX_EX) });
   });
-  const ws = [...latest.values()].map((w, i) => [w, i]).sort((a, b) => a[0].date !== b[0].date ? (a[0].date < b[0].date ? 1 : -1) : a[1] - b[1]).map(x => x[0]).slice(0, VD.MAX_W);
-  const WSZ = 24 + VD.MAX_EX * VD.VEX, out = new Uint8Array(16 + ws.length * WSZ), v = new DataView(out.buffer);
-  const str = (off, s, n) => { const t = vdPlain(s, n); for (let k = 0; k < t.length && k < n - 1; k++) out[off + k] = t.charCodeAt(k); };
-  out.set([0x56, 0x44, 0x54, 0x31]); v.setUint16(4, ws.length, true); v.setUint16(6, VD.VEX, true); str(8, stamp, 8);
+  const out = [], seen = new Set();
+  (S.gallery || []).forEach(g => {
+    if (!g || typeof g !== 'object') return;
+    const title = String(g.name || '').trim(); if (!title || VD.SKIP.includes(title.toLowerCase()) || seen.has(title)) return;
+    let items = [];
+    (g.items || []).forEach(it => {
+      const i = it.exId; if (!i) return;
+      const n = Math.max(1, Math.min(VD.MAX_SET, Math.trunc(Number(it.sets) || 3))), h = last[i] || [], m = String(it.rr || '').match(/\d+/), lo = m ? Number(m[0]) : 0;
+      const sets = h.length ? Array.from({ length: n }, (_, k) => { const x = h[Math.min(k, h.length - 1)]; return [Math.round(x[0] * 10), x[1]]; })
+                            : Array.from({ length: n }, () => [Math.round((Number(it.w) || 0) * 10), lo || 10]);
+      items.push(exItem(i, it.rest, sets));
+    });
+    if (!items.length) return;
+    items = items.slice(0, VD.MAX_EX); seen.add(title);
+    out.push({ title, date: done[title] || '', items, fav: !!g.fav, gal: true, est: Math.trunc(Number(g.est) || 0) || estMin(items) });
+  });
+  [...latest.values()].map((w, i) => [w, i]).sort((a, b) => a[0].date !== b[0].date ? (a[0].date < b[0].date ? 1 : -1) : a[1] - b[1]).map(x => x[0]).forEach(w => {
+    if (seen.has(w.title)) return;
+    if (seen.size && (!vdYmd(w.date) || vdDays(today, w.date) > VD.RECENT)) return;
+    out.push(Object.assign({}, w, { fav: false, gal: false, est: estMin(w.items) }));
+  });
+  const ws = out.slice(0, VD.MAX_W);
+  const WSZ = VD.WHDR + VD.MAX_EX * VD.VEX, buf = new Uint8Array(16 + ws.length * WSZ), v = new DataView(buf.buffer);
+  const str = (off, s, n) => { const t = vdPlain(s, n); for (let k = 0; k < t.length && k < n - 1; k++) buf[off + k] = t.charCodeAt(k); };
+  buf.set([0x56, 0x44, 0x54, 0x32]); v.setUint16(4, ws.length, true); v.setUint16(6, VD.VEX, true); str(8, stamp, 8);
   ws.forEach((w, wi) => {
-    const o = 16 + wi * WSZ; str(o, w.title, VD.TITLE); out[o + 22] = w.items.length;
+    const o = 16 + wi * WSZ; str(o, w.title, VD.TITLE); buf[o + VD.TITLE] = w.items.length; buf[o + VD.TITLE + 1] = (w.gal ? 1 : 0) | (w.fav ? 2 : 0);
+    v.setUint16(o + VD.TITLE + 2, Math.min(999, w.est || 0), true); v.setUint32(o + VD.TITLE + 4, vdYmd(w.date), true);
     w.items.forEach((e, k) => {
-      const q = o + 24 + k * VD.VEX;
+      const q = o + VD.WHDR + k * VD.VEX;
       str(q, e.name, VD.NAME); str(q + 34, vdPlain(e.musc, VD.MUSC).toUpperCase(), VD.MUSC); str(q + 54, e.id, VD.ID);
-      out[q + 78] = e.sets.length; out[q + 79] = vdPlates(e.id); v.setUint16(q + 80, Math.min(e.rest, 600), true);
-      e.sets.forEach(([w10, r], j) => { v.setUint16(q + 82 + 2 * j, w10 & 0xffff, true); out[q + 94 + j] = r & 255; });
-      out[q + 100] = e.step10; out[q + 101] = e.sr; v.setUint16(q + 102, e.best10, true); v.setUint16(q + 104, e.sw10 & 0xffff, true);
+      buf[q + 78] = e.sets.length; buf[q + 79] = vdPlates(e.id); v.setUint16(q + 80, Math.min(e.rest, 600), true);
+      e.sets.forEach(([w10, r], j) => { v.setUint16(q + 82 + 2 * j, w10 & 0xffff, true); buf[q + 94 + j] = r & 255; });
+      buf[q + 100] = e.step10; buf[q + 101] = e.sr; v.setUint16(q + 102, e.best10, true); v.setUint16(q + 104, e.sw10 & 0xffff, true);
     });
   });
-  return out;
+  return buf;
 }
+const rnIsoToday = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
 
 /* /user/hub/alt.dat: per exercise of volt.dat, up to 3 others for the same muscle (TROCAR on the band), the ones used before first, with their last top set.
    Layout in apps/volt.c: AltHdr { "ALT1", u16 n, u16 212 }, then n x AltRec { char id[24]; u8 n, pad; AltEx a[3] }, AltEx { char id[24]; char name[34]; u16 w10; u8 reps, plates } */
 const AL = { REC: 212, EX: 62, MAX: 64 };
 function altDat(S, CAT, dat) {
-  const dv = new DataView(dat.buffer, dat.byteOffset, dat.byteLength), nw = dat.length > 16 ? dv.getUint16(4, true) : 0, WSZ = 24 + VD.MAX_EX * VD.VEX, ids = [];
+  const dv = new DataView(dat.buffer, dat.byteOffset, dat.byteLength), nw = dat.length > 16 ? dv.getUint16(4, true) : 0, WSZ = VD.WHDR + VD.MAX_EX * VD.VEX, ids = [];
   const cstr = (o, n) => { let t = ''; for (let k = 0; k < n && dat[o + k]; k++) t += String.fromCharCode(dat[o + k]); return t; };
-  for (let w = 0; w < nw; w++) { const o = 16 + w * WSZ; for (let k = 0; k < dat[o + 22]; k++) { const id = cstr(o + 24 + k * VD.VEX + 54, VD.ID); if (id && !ids.includes(id)) ids.push(id); } }
+  for (let w = 0; w < nw; w++) { const o = 16 + w * WSZ; for (let k = 0; k < dat[o + VD.TITLE]; k++) { const id = cstr(o + VD.WHDR + k * VD.VEX + 54, VD.ID); if (id && !ids.includes(id)) ids.push(id); } }
   const top = {}, used = {};
   (S.sessions || []).slice().sort((a, b) => (a.date || '') < (b.date || '') ? -1 : 1).forEach(s => (s.items || []).forEach(it => {
     const work = (it.sets || []).filter(x => (x.t || 'n') !== 'w' && x.done !== false && +x.r > 0).map(x => [Math.round((+x.w || 0) * 10), Math.trunc(+x.r)]);
