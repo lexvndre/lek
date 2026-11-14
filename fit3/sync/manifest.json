@@ -68,11 +68,11 @@
  ],
  "art": {
   "file": "art.bin",
-  "sha": "4677042fa58cbfc13bdce49cf9967d57f58bcae9c5372475d605b16b7a8267f7"
+  "sha": "92a5cb29658f27591085bec6b138b7ae206e193da63350813159c07f8068220d"
  },
  "cat": {
   "file": "cat.json",
-  "sha": "45e72b360eae2c7464465487ae1caa33cf63c38b829483289702c3c71b252d23"
+  "sha": "a8b08cba9b1637cd47a22e475bc278760af7b9c0754b77f66cab783b052ce4c0"
  },
  "data": [
   {
