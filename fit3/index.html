@@ -647,6 +647,14 @@ async function sync() {
     for (const a of apps) { const b = await fetchBytes(a.file, a.sha), f = { bytes: b, ...parseF3x(b) }; await installF3x(f, table, a.after); have[a.file] = a.sha; }
     await saveManifest(have); sum.push('Apps atualizados: ' + apps.map(a => a.title || a.file).join(', '));
   } else sum.push('Apps já estavam em dia');
+  // 3a. the place in the Hub's list (slot order) of an app already installed, e.g. Spotify right after VOLT
+  for (const a of man.apps.filter(a => a.after && !skip.includes(a.title))) {
+    const m = table.findIndex(e => e && e.app === a.title), v = table.findIndex(e => e && e.app === a.after);
+    if (m < 0 || v < 0 || m === v + 1) continue;
+    const b = await fetchBytes(a.file, a.sha), f = { bytes: b, ...parseF3x(b) };
+    await installF3x(f, table, a.after);
+    if (table.findIndex(e => e && e.app === a.title) === table.findIndex(e => e && e.app === a.after) + 1) sum.push(`${a.title} agora fica logo depois do ${a.after}`);
+  }
   $('prog').value = 0.25;
 
   // 3b. the files an app reads (Trilha's text): only what changed, and only into /user/hub
