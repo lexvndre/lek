@@ -8,7 +8,7 @@
   {
    "file": "spotify.f3x",
    "title": "Spotify",
-   "sha": "948fe3189a63e6e59f5f84cba0c42d14538498cfaca9952f0931eb9ec87237a5",
+   "sha": "b1b9b522a3afd273d40a91d38d44f5414e62a71cff5d891914a4cd95f4ce566d",
    "after": "VOLT"
   },
   {
@@ -69,7 +69,7 @@
   {
    "file": "ponte.f3x",
    "title": "Ponte",
-   "sha": "cbb7a6c2d8c2b637fd8fbe13e7f128e6abc55b2af7ad91fd348efff69edcebe6"
+   "sha": "b46d6bd7c173ed827c70d2887aa22951f5e68b8eccae74314ae7bf2a5470574b"
   }
  ],
  "art": {
