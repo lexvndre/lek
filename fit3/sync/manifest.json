@@ -3,7 +3,13 @@
   {
    "file": "volt.f3x",
    "title": "VOLT",
-   "sha": "52569f55a4f350d4c54274685ff6f6243b610d44453c853af2adfbe257278586"
+   "sha": "75fe3205ddf9ec32c73cd70621cae0e638b891cdcf1217637371d5d991257f39"
+  },
+  {
+   "file": "spotify.f3x",
+   "title": "Spotify",
+   "sha": "57fbef28340a33724799439194955ec920e31be8924b31474e556553d85fefde",
+   "after": "VOLT"
   },
   {
    "file": "intervalo.f3x",
@@ -63,7 +69,7 @@
   {
    "file": "ponte.f3x",
    "title": "Ponte",
-   "sha": "bd1e42014b91f8a0bcb28821302b4833c79a83bdcade87dafd7b70ef112d2ead"
+   "sha": "faab1cbf8832102f9f7042eaee4e3bd90e64437c70ddfb321bf6dd7e3874d654"
   }
  ],
  "art": {

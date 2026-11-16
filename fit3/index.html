@@ -479,8 +479,27 @@ function parseArt(b) {
   return out;
 }
 
-async function installF3x(f3x, table) {
-  let n = table.findIndex(e => e && e.app === f3x.name);
+/* an app that asks to sit right after another one in the Hub's list (manifest "after", e.g. Spotify after VOLT): the list follows the slot numbers, so
+ * that slot is made free first: the app in it moves, its bytes as they are on the band, to a free slot; the app's own old slot gets the "removed" mark */
+async function placeAfter(f3x, table, after) {
+  const a = table.findIndex(e => e && e.app === after); if (a < 0 || a + 1 >= table.length) return -1;
+  const pref = a + 1, cur = table[pref], mine = table.findIndex(e => e && e.app === f3x.name);
+  if (mine === pref) return pref;
+  if (cur && !cur.free) {
+    const free = table.findIndex((e, i) => i !== pref && (!e || e.free)); if (free < 0) return -1;
+    log(`  ${cur.app}: indo para o espaço ${free} (o ${f3x.name} fica logo depois do ${after})…`);
+    await sleep(2200); const b = await session('ler', L => readRaw(L, slotPath(pref), 65536)); if (!b) return -1;
+    await sleep(2200); await session('mover', L => writeFile(L, b, slotPath(free)));
+    await sleep(2200); const back = await session('conferir', L => readRaw(L, slotPath(free), 65536));
+    if (!same(back, b)) throw new Error(`${cur.app}: a cópia na pulseira não confere, sincronize de novo`);
+    table[free] = cur; table[pref] = { free: true };
+  }
+  if (mine >= 0) { await sleep(2200); await session('remover', L => writeFile(L, enc.encode('F3X-GONE'), slotPath(mine))); table[mine] = { free: true }; }
+  return pref;
+}
+async function installF3x(f3x, table, after) {
+  let n = after ? await placeAfter(f3x, table, after) : -1;
+  if (n < 0) n = table.findIndex(e => e && e.app === f3x.name);
   if (n < 0) { n = table.findIndex(e => !e || e.free); if (n < 0) throw new Error('os 16 espaços estão ocupados: remova um app no Hub (toque longo)'); }
   const path = slotPath(n); log(`  ${f3x.name}: gravando no espaço ${n}…`);
   await sleep(2200); await session('gravar', L => writeFile(L, f3x.bytes, path));
@@ -625,7 +644,7 @@ async function sync() {
   const apps = man.apps.filter(a => !skip.includes(a.title) && !table.some(e => e && e.app === a.title && e.sha === a.sha));
   if (apps.length) {
     log(`instalando ${apps.length} app(s)…`);
-    for (const a of apps) { const b = await fetchBytes(a.file, a.sha), f = { bytes: b, ...parseF3x(b) }; await installF3x(f, table); have[a.file] = a.sha; }
+    for (const a of apps) { const b = await fetchBytes(a.file, a.sha), f = { bytes: b, ...parseF3x(b) }; await installF3x(f, table, a.after); have[a.file] = a.sha; }
     await saveManifest(have); sum.push('Apps atualizados: ' + apps.map(a => a.title || a.file).join(', '));
   } else sum.push('Apps já estavam em dia');
   $('prog').value = 0.25;
